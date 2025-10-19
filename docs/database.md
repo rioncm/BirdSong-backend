@@ -1,0 +1,69 @@
+- database tables
+    - days
+        - date_id
+        - date
+        - dawn
+        - sunrise
+        - solar_noon
+        - dusk
+        - sunset
+        - forecast_high
+        - forecast_low
+        - forecast_rain
+        - actual_high
+        - actual_low
+        - actual_rain
+        - season
+
+    - idents - identifications
+        - id -- serial
+        - date_id -- fk to days
+        - species_id -- fk to species
+        - date - id date
+        - time -- time of recording
+        - common_name - 
+        - sci_name
+        - confidence
+        - wav_id
+        - start_time
+        - end_time
+
+    - recordings
+        - wave_id
+        - path
+
+    - species - species identified
+        - id -- hash of the sci_name
+        - sci_name
+        - species
+        - genus
+        - family
+        - common_name
+        - first_id
+        - last_id
+        - image_url
+        - id_days -- number of days this species was identified
+        - info_url
+        - ai_summary
+
+    - data_sources - API datasources loaded and updated from yaml config
+        - id
+        - name
+        - title
+        - date_added
+        - date_update
+        - source_type [image, taxa, copy, ai ]
+        - reference_url
+        - api_url
+        - key_required -- bool
+        - api_key
+        - cite -- bool
+
+    - data_citations -- citations for species information, images, and other content
+        - citation_id
+        - source_id
+        - species_id
+        - created_date
+        - updated_date
+        - data_type [image, taxa, copy, ai ]
+        - content 

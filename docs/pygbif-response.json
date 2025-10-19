@@ -1,0 +1,23 @@
+{
+  "usageKey": 2482414,
+  "scientificName": "Aphelocoma californica (Vigors, 1839)",
+  "canonicalName": "Aphelocoma californica",
+  "rank": "SPECIES",
+  "status": "ACCEPTED",
+  "confidence": 99,
+  "matchType": "EXACT",
+  "kingdom": "Animalia",
+  "phylum": "Chordata",
+  "order": "Passeriformes",
+  "family": "Corvidae",
+  "genus": "Aphelocoma",
+  "species": "Aphelocoma californica",
+  "kingdomKey": 1,
+  "phylumKey": 44,
+  "classKey": 212,
+  "orderKey": 729,
+  "familyKey": 5235,
+  "genusKey": 2482394,
+  "speciesKey": 2482414,
+  "class": "Aves"
+}

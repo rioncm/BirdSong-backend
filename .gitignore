@@ -1,0 +1,39 @@
+#propritary files
+models/
+
+#user-specific configurations
+config.yaml
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+*.log
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Data outputs
+app/data/
+app/logs/
+app/cameras/
+app/microphones/
+
+# Dependencies and build
+node_modules/
+build/
+dist/
+
+# Runtime files
+*.db
+*.sqlite
+*.wav
+*.mp3
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
