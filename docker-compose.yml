@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+    container_name: birdsong-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      BIRDNET_MODEL_PATH: ${BIRDNET_MODEL_PATH:-/app/models/BirdNET_v2.4_tflite/audio-model.tflite}
+      BIRDNET_LABEL_PATH: ${BIRDNET_LABEL_PATH:-/app/models/BirdNET_v2.4_tflite/labels/en_us.txt}
+      API_LOG_LEVEL: ${API_LOG_LEVEL:-info}
+    volumes:
+      - ./app:/app
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      - gitsync
+    command: >
+      uvicorn api:app
+      --host 0.0.0.0
+      --port 8000
+
+  gitsync:
+    image: registry.k8s.io/git-sync/git-sync:v4.1.0
+    restart: unless-stopped
+    environment:
+      - GIT_SYNC_REPO=${GIT_SYNC_REPO}
+      - GIT_SYNC_BRANCH=${GIT_SYNC_BRANCH:-main}
+      - GIT_SYNC_REV=${GIT_SYNC_REV:-HEAD}
+      - GIT_SYNC_ROOT=/workspace
+      - GIT_SYNC_DEST=repo
+      - GIT_SYNC_ONE_TIME=${GIT_SYNC_ONE_TIME:-false}
+      - GIT_SYNC_WAIT=${GIT_SYNC_WAIT:-30}
+      - GIT_SYNC_USERNAME=${GIT_SYNC_USERNAME}
+      - GIT_SYNC_PASSWORD=${GIT_SYNC_PASSWORD}
+      - GIT_SYNC_SSH=${GIT_SYNC_SSH:-false}
+      - GIT_KNOWN_HOSTS=${GIT_KNOWN_HOSTS:-false}
+    volumes:
+      - ./app:/workspace/repo
