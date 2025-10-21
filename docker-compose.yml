@@ -7,7 +7,7 @@ services:
     env_file:
       - .env
     environment:
-      GIT_SYNC_REPO: ${GIT_SYNC_REPO:?Set GIT_SYNC_REPO to the public repository URL}
+      GIT_SYNC_REPO: https://github.com/rioncm/birdsong-backend.git
       GIT_SYNC_BRANCH: ${GIT_SYNC_BRANCH:-main}
       GIT_SYNC_REV: ${GIT_SYNC_REV:-HEAD}
       GIT_SYNC_DEPTH: ${GIT_SYNC_DEPTH:-1}
