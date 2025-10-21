@@ -8,3 +8,10 @@ pygbif
 fastapi
 uvicorn[standard]
 python-multipart
+sqlalchemy
+databases[sqlite]
+pydantic
+httpx
+astral
+pytest
+

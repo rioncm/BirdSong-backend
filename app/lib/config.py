@@ -150,6 +150,7 @@ class BirdsongConfig:
     config: BirdNetConfig
     cameras: Dict[str, CameraConfig] = field(default_factory=dict)
     microphones: Dict[str, MicrophoneConfig] = field(default_factory=dict)
+    alerts: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Dict]) -> "BirdsongConfig":
@@ -168,6 +169,7 @@ class BirdsongConfig:
             config=BirdNetConfig.from_dict(data["config"]),
             cameras=cameras,
             microphones=microphones,
+            alerts=data.get("alerts", {}),
         )
 
 

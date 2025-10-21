@@ -1,9 +1,207 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
+
+from sqlalchemy import insert, select, update, inspect, text
+from sqlalchemy.engine import Engine
 
 from lib.config import AppConfig
+from lib.data.db import initialize_database
+from lib.data.tables import data_sources
+
+
+_ALLOWED_SOURCE_TYPES = {"image", "taxa", "copy", "ai", "weather"}
+_SOURCE_TYPE_ALIASES = {
+    "ai model": "ai",
+    "ai_model": "ai",
+    "model": "ai",
+    "gbif": "taxa",
+    "taxonomy": "taxa",
+    "taxon": "taxa",
+    "species": "taxa",
+    "xenocanto": "taxa",
+    "macaulay": "image",
+    "macaulay library": "image",
+    "media": "image",
+    "photo": "image",
+    "photos": "image",
+    "image": "image",
+    "wikimedia": "image",
+    "wikipedia": "copy",
+    "weather": "weather",
+    "copy": "copy",
+}
+
+
+def _to_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "t", "yes", "y", "1"}:
+            return True
+        if normalized in {"false", "f", "no", "n", "0"}:
+            return False
+    return bool(value)
+
+
+def _clean_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    stringified = str(value).strip()
+    return stringified or None
+
+
+def _normalize_source_type(raw_value: Any) -> str:
+    normalized = _clean_str(raw_value)
+    if not normalized:
+        return "copy"
+
+    lowered = normalized.lower()
+    if lowered in _ALLOWED_SOURCE_TYPES:
+        return lowered
+    return _SOURCE_TYPE_ALIASES.get(lowered, "copy")
+
+
+def _parse_headers(raw_headers: Any) -> Dict[str, str]:
+    headers: Dict[str, str] = {}
+    if isinstance(raw_headers, dict):
+        for key, value in raw_headers.items():
+            key_clean = _clean_str(key)
+            value_clean = _clean_str(value)
+            if key_clean and value_clean:
+                headers[key_clean] = value_clean.strip('"')
+    elif isinstance(raw_headers, (list, tuple)):
+        for item in raw_headers:
+            if not isinstance(item, str):
+                continue
+            line = item.strip().strip('"')
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            key_clean = _clean_str(key)
+            value_clean = _clean_str(value)
+            if key_clean and value_clean:
+                headers[key_clean] = value_clean.strip('"')
+    elif isinstance(raw_headers, str):
+        line = raw_headers.strip().strip('"')
+        if ":" in line:
+            key, value = line.split(":", 1)
+            key_clean = _clean_str(key)
+            value_clean = _clean_str(value)
+            if key_clean and value_clean:
+                headers[key_clean] = value_clean
+    return headers
+
+
+def _normalize_data_source_configs(raw_entries: Any) -> List[Dict[str, Any]]:
+    if not raw_entries:
+        return []
+
+    normalized_entries: List[Dict[str, Any]] = []
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        if not _to_bool(entry.get("active", True), default=True):
+            continue
+
+        name = _clean_str(entry.get("name"))
+        if not name:
+            continue
+
+        api_key = _clean_str(entry.get("api_key"))
+        source_type_raw = (
+            entry.get("source_type")
+            or entry.get("type")
+            or entry.get("data_type")
+        )
+        headers = _parse_headers(entry.get("headers"))
+        user_agent = _clean_str(entry.get("user_agent"))
+        if not user_agent and headers.get("User-Agent"):
+            user_agent = headers.get("User-Agent")
+        normalized_entries.append(
+            {
+                "name": name,
+                "title": _clean_str(entry.get("title")),
+                "source_type": _normalize_source_type(source_type_raw),
+                "reference_url": _clean_str(entry.get("reference_url") or entry.get("url")),
+                "api_url": _clean_str(entry.get("api_url") or entry.get("endpoint")),
+                "key_required": _to_bool(
+                    entry.get("key_required"),
+                    default=bool(api_key),
+                ),
+                "api_key": api_key,
+                "cite": _to_bool(entry.get("cite"), default=True),
+                "headers": headers,
+                "user_agent": user_agent,
+            }
+        )
+
+    return normalized_entries
+
+
+def _ensure_data_sources_schema(engine: Engine) -> None:
+    inspector = inspect(engine)
+    if "data_sources" not in inspector.get_table_names():
+        return
+
+    to_apply: List[str] = []
+    with engine.connect() as connection:
+        result = connection.execute(text("PRAGMA table_info(data_sources)"))
+        columns = {row._mapping["name"] for row in result}
+        if "active" not in columns:
+            to_apply.append("ALTER TABLE data_sources ADD COLUMN active BOOLEAN NOT NULL DEFAULT 1")
+        if "headers" not in columns:
+            to_apply.append("ALTER TABLE data_sources ADD COLUMN headers TEXT DEFAULT '{}'")  # JSON-compatible
+
+    if not to_apply:
+        return
+
+    with engine.begin() as connection:
+        for statement in to_apply:
+            connection.execute(text(statement))
+
+
+def _sync_data_sources(engine: Engine, entries: List[Dict[str, Any]]) -> None:
+    if not entries:
+        return
+
+    _ensure_data_sources_schema(engine)
+
+    with engine.begin() as connection:
+        existing_rows = connection.execute(
+            select(data_sources.c.name, data_sources.c.id)
+        ).all()
+        existing_ids = {row.name: row.id for row in existing_rows}
+
+        for record in entries:
+            payload = {
+                "name": record["name"],
+                "title": record.get("title"),
+                "source_type": record.get("source_type"),
+                "reference_url": record.get("reference_url"),
+                "api_url": record.get("api_url"),
+                "key_required": record.get("key_required"),
+                "api_key": record.get("api_key"),
+                "cite": record.get("cite"),
+            }
+
+            existing_id = existing_ids.get(record["name"])
+            if existing_id is not None:
+                payload["date_updated"] = datetime.utcnow()
+                connection.execute(
+                    update(data_sources)
+                    .where(data_sources.c.id == existing_id)
+                    .values(**payload)
+                )
+            else:
+                connection.execute(insert(data_sources).values(**payload))
 
 
 def _resolve_path(raw_path: str | Path, base_dir: Path) -> Path:
@@ -25,6 +223,31 @@ def initialize_environment(
         raise ValueError("config_data missing 'birdsong' section")
 
     base_dir_path = Path(base_dir).expanduser().resolve()
+
+    data_source_entries = _normalize_data_source_configs(
+        birdsong_section.get("data_sources")
+    )
+    data_source_headers = {
+        entry["name"]: dict(entry.get("headers", {}))
+        for entry in data_source_entries
+        if entry.get("headers")
+    }
+    data_source_user_agents = {
+        entry["name"]: entry.get("user_agent")
+        for entry in data_source_entries
+        if entry.get("user_agent")
+    }
+    alerts_config = birdsong_section.get("alerts") or {}
+    storage_section = birdsong_section.get("storage") or {}
+    storage_paths = {}
+    for key, value in storage_section.items():
+        if value is None:
+            continue
+        resolved = _resolve_path(value, base_dir_path)
+        storage_paths[key] = resolved
+        if key.endswith("path") or key.endswith("_path"):
+            resolved.mkdir(parents=True, exist_ok=True)
+    notifications_config = config_data.get("notifications") or {}
 
     database_section = dict(birdsong_section.get("database") or {})
     if not database_section:
@@ -207,11 +430,15 @@ def initialize_environment(
             "database": normalized_database,
             "config": normalized_birdnet,
             "cameras": camera_configs,
-            "microphones": microphone_configs,
+        "microphones": microphone_configs,
+        "alerts": alerts_config,
         }
     }
 
     app_config = AppConfig.from_dict(normalized_config)
+
+    engine = initialize_database(app_config.birdsong.database)
+    _sync_data_sources(engine, data_source_entries)
 
     resources = {
         "database_dir": database_dir_path,
@@ -222,6 +449,12 @@ def initialize_environment(
         "camera_output_paths": camera_output_paths,
         "camera_coordinates": camera_coordinates,
         "microphone_output_paths": microphone_output_paths,
+        "third_party_sources": data_source_entries,
+        "data_source_headers": data_source_headers,
+        "data_source_user_agents": data_source_user_agents,
+        "alerts_config": alerts_config,
+        "storage_paths": storage_paths,
+        "notifications_config": notifications_config,
     }
 
     return app_config, resources
