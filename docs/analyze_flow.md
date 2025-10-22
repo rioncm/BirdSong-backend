@@ -1,7 +1,7 @@
 # Analyze Pipeline Flow
 
 ## 1. Audio Intake & BirdNET Analysis
-1. Recorder uploads a WAV file (from camera or microphone) into the analyzer queue.
+1. Recorder uploads a WAV file (from stream or microphone) into the analyzer queue.
 2. `BaseAnalyzer` runs BirdNET with configured sample rate, chunk size, overlap, and confidence threshold.
 3. Analyzer log receives a structured entry regardless of outcome (`id=<device> | date=<UTC> | … | detections=<count>`).
 

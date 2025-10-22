@@ -29,7 +29,7 @@ def run_capture_loop(
     loop_interval: float = 1.0,
 ) -> None:
     """
-    Process recordings for each configured camera indefinitely.
+    Process recordings for each configured stream indefinitely.
 
     When max_runtime is provided, the loop stops after the given number
     of seconds—handy for testing to avoid long-running sessions.
@@ -43,23 +43,23 @@ def run_capture_loop(
     start_time = time.monotonic()
 
     while True:
-        for camera_name, camera_config in app_config.birdsong.cameras.items():
+        for stream_name, stream_config in app_config.birdsong.streams.items():
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            output_path = Path(camera_config.output_folder) / f"{timestamp}.wav"
+            output_path = Path(stream_config.output_folder) / f"{timestamp}.wav"
             capture = AudioCapture(
-                camera_config=camera_config,
+                stream_config=stream_config,
                 birdnet_config=birdnet_config,
                 output_file=str(output_path),
             )
             capture.capture()
-            print(f"[{timestamp}] Captured audio for {camera_name} -> {output_path}")
+            print(f"[{timestamp}] Captured audio for {stream_name} -> {output_path}")
 
             try:
                 analyze_result = analyzer.analyze(
                     output_path,
-                    latitude=camera_config.latitude,
-                    longitude=camera_config.longitude,
-                    camera_id=camera_config.camera_id,
+                    latitude=stream_config.latitude,
+                    longitude=stream_config.longitude,
+                    stream_id=stream_config.stream_id,
                 )
                 if analyze_result.detections:
                     top_detection = analyze_result.detections[0]

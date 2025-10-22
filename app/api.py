@@ -21,6 +21,7 @@ from fastapi import (
     Query,
     status,
 )
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from starlette.routing import NoMatchFound
 from sqlalchemy import and_, func, or_, select
@@ -70,6 +71,13 @@ CONFIG_PATH = Path(_config_override) if _config_override else PROJECT_ROOT / "co
 API_KEY_HEADER = "X-API-Key"
 
 app = FastAPI(title="BirdSong Ingest API", version="1.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 logger = logging.getLogger("birdsong.api")
 
 
@@ -549,7 +557,7 @@ async def ingest_microphone_audio(
             destination_path,
             latitude=lat_value,
             longitude=lon_value,
-            camera_id=microphone.microphone_id,
+            stream_id=microphone.microphone_id,
         )
     except Exception as exc:  # noqa: BLE001 - return clean error to client
         raise HTTPException(

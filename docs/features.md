@@ -1,7 +1,7 @@
 # Planed Features
 
 ## Backend
-- capture audio from unifi camera rtsp stream
+- capture audio from Unifi RTSP stream
 - analyze through BirdNet models
 - log captures to database
     - include file path to wav file

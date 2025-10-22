@@ -309,62 +309,66 @@ def initialize_environment(
         ),
     }
 
-    cameras_section = dict(birdsong_section.get("cameras") or {})
-    camera_base_raw = cameras_section.pop("base_path", None)
-    default_latitude = cameras_section.pop("default_latitude", None)
-    default_longitude = cameras_section.pop("default_longitude", None)
+    streams_section = dict(birdsong_section.get("streams") or {})
+    stream_base_raw = streams_section.pop("base_path", None)
+    default_latitude = streams_section.pop("default_latitude", None)
+    default_longitude = streams_section.pop("default_longitude", None)
 
-    camera_base_path = None
-    if camera_base_raw:
-        camera_base_path = _resolve_path(camera_base_raw, base_dir_path)
-        camera_base_path.mkdir(parents=True, exist_ok=True)
+    stream_base_path = None
+    if stream_base_raw:
+        stream_base_path = _resolve_path(stream_base_raw, base_dir_path)
+        stream_base_path.mkdir(parents=True, exist_ok=True)
 
-    camera_configs = {}
-    camera_output_paths: Dict[str, Path] = {}
-    camera_coordinates: Dict[str, Tuple[Any, Any]] = {}
+    stream_configs = {}
+    stream_output_paths: Dict[str, Path] = {}
+    stream_coordinates: Dict[str, Tuple[Any, Any]] = {}
 
-    for camera_name, camera_details in cameras_section.items():
-        if not isinstance(camera_details, dict):
+    for stream_name, stream_details in streams_section.items():
+        if not isinstance(stream_details, dict):
             continue
 
-        rtsp_url = camera_details.get("rtsp_url")
-        if not rtsp_url:
-            raise ValueError(f"Camera '{camera_name}' missing rtsp_url")
+        url = stream_details.get("url")
+        if not url:
+            raise ValueError(f"Stream '{stream_name}' missing url")
 
-        record_time = int(camera_details.get("record_time", 0))
-        output_folder = camera_details.get("output_folder") or camera_name
+        kind = (stream_details.get("kind") or "rtsp").strip().lower()
+        record_time = int(stream_details.get("record_time", 0))
+        if record_time <= 0:
+            raise ValueError(f"Stream '{stream_name}' must set a positive record_time value")
+        output_folder = stream_details.get("output_folder") or stream_name
         location_label = (
-            camera_details.get("location_name")
-            or camera_details.get("location")
-            or camera_name
+            stream_details.get("location_name")
+            or stream_details.get("location")
+            or stream_name
         )
-        camera_id = camera_details.get("camera_id") or camera_name
+        stream_id = stream_details.get("stream_id") or stream_details.get("id") or stream_name
 
-        if camera_base_path is not None:
-            camera_output_path = _resolve_path(output_folder, camera_base_path)
+        if stream_base_path is not None:
+            stream_output_path = _resolve_path(output_folder, stream_base_path)
         else:
-            camera_output_path = _resolve_path(output_folder, base_dir_path)
-        camera_output_path.mkdir(parents=True, exist_ok=True)
+            stream_output_path = _resolve_path(output_folder, base_dir_path)
+        stream_output_path.mkdir(parents=True, exist_ok=True)
 
-        camera_configs[camera_name] = {
-            "camera_id": camera_id,
-            "rtsp_url": rtsp_url,
+        stream_configs[stream_name] = {
+            "stream_id": stream_id,
+            "kind": kind,
+            "url": url,
             "record_time": record_time,
-            "output_folder": str(camera_output_path),
+            "output_folder": str(stream_output_path),
             "location": location_label,
         }
-        camera_output_paths[camera_name] = camera_output_path
+        stream_output_paths[stream_name] = stream_output_path
 
-        latitude = camera_details.get("latitude", camera_details.get("cam_latitude"))
+        latitude = stream_details.get("latitude")
         if latitude is None:
             latitude = default_latitude
-        longitude = camera_details.get("longitude", camera_details.get("cam_longitude"))
+        longitude = stream_details.get("longitude")
         if longitude is None:
             longitude = default_longitude
         if latitude is not None and longitude is not None:
-            camera_coordinates[camera_name] = (latitude, longitude)
-        camera_configs[camera_name]["latitude"] = latitude
-        camera_configs[camera_name]["longitude"] = longitude
+            stream_coordinates[stream_name] = (latitude, longitude)
+        stream_configs[stream_name]["latitude"] = latitude
+        stream_configs[stream_name]["longitude"] = longitude
 
     microphones_section = dict(birdsong_section.get("microphones") or {})
     mic_base_raw = microphones_section.pop("base_path", None)
@@ -426,12 +430,12 @@ def initialize_environment(
         microphone_output_paths[str(microphone_id)] = mic_output_path
 
     device_index: List[Dict[str, Any]] = []
-    for name, config in camera_configs.items():
-        output_path = camera_output_paths.get(name)
+    for name, config in stream_configs.items():
+        output_path = stream_output_paths.get(name)
         device_index.append(
             {
-                "type": "camera",
-                "id": config["camera_id"],
+                "type": "stream",
+                "id": config["stream_id"],
                 "name": name,
                 "location": config["location"],
                 "path": str(output_path) if output_path is not None else None,
@@ -453,9 +457,9 @@ def initialize_environment(
         "birdsong": {
             "database": normalized_database,
             "config": normalized_birdnet,
-            "cameras": camera_configs,
-        "microphones": microphone_configs,
-        "alerts": alerts_config,
+            "streams": stream_configs,
+            "microphones": microphone_configs,
+            "alerts": alerts_config,
         }
     }
 
@@ -470,8 +474,8 @@ def initialize_environment(
         "model_path": model_path,
         "label_path": label_path,
         "species_list_path": species_list_path,
-        "camera_output_paths": camera_output_paths,
-        "camera_coordinates": camera_coordinates,
+        "stream_output_paths": stream_output_paths,
+        "stream_coordinates": stream_coordinates,
         "microphone_output_paths": microphone_output_paths,
         "device_index": device_index,
         "third_party_sources": data_source_entries,

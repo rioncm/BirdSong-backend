@@ -57,9 +57,10 @@ class BirdNetConfig:
 
 
 @dataclass
-class CameraConfig:
-    camera_id: str
-    rtsp_url: str
+class StreamConfig:
+    stream_id: str
+    kind: str
+    url: str
     record_time: int
     output_folder: str
     location: str
@@ -71,28 +72,36 @@ class CameraConfig:
         cls,
         data: Dict[str, Any],
         *,
-        camera_name: Optional[str] = None,
-    ) -> "CameraConfig":
+        stream_name: Optional[str] = None,
+    ) -> "StreamConfig":
         def to_optional_float(value: Any) -> Optional[float]:
             if value in (None, "", "null"):
                 return None
             return float(value)
 
-        camera_id_raw = (
-            data.get("camera_id")
-            or data.get("id")
-            or camera_name
-            or data.get("output_folder")
-        )
-        if not camera_id_raw:
-            raise ValueError("Camera configuration missing 'camera_id'")
+        stream_id_raw = data.get("stream_id") or data.get("id") or stream_name or data.get("output_folder")
+        if not stream_id_raw:
+            raise ValueError("Stream configuration missing 'stream_id'")
+
+        kind = (data.get("kind") or "rtsp").strip().lower()
+        url = data.get("url")
+        if not url:
+            raise ValueError(f"Stream '{stream_id_raw}' missing required 'url'")
+
+        record_time = int(data.get("record_time", 0))
+        if record_time <= 0:
+            raise ValueError(f"Stream '{stream_id_raw}' must set a positive 'record_time'")
+
+        location = data.get("location") or stream_id_raw
+        output_folder = data.get("output_folder") or stream_id_raw
 
         return cls(
-            camera_id=str(camera_id_raw),
-            rtsp_url=data["rtsp_url"],
-            record_time=int(data["record_time"]),
-            output_folder=data["output_folder"],
-            location=data["location"],
+            stream_id=str(stream_id_raw),
+            kind=kind,
+            url=str(url),
+            record_time=record_time,
+            output_folder=str(output_folder),
+            location=str(location),
             latitude=to_optional_float(data.get("latitude")),
             longitude=to_optional_float(data.get("longitude")),
         )
@@ -148,16 +157,16 @@ class MicrophoneConfig:
 class BirdsongConfig:
     database: DatabaseConfig
     config: BirdNetConfig
-    cameras: Dict[str, CameraConfig] = field(default_factory=dict)
+    streams: Dict[str, StreamConfig] = field(default_factory=dict)
     microphones: Dict[str, MicrophoneConfig] = field(default_factory=dict)
     alerts: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Dict]) -> "BirdsongConfig":
-        cameras_raw = data.get("cameras", {})
-        cameras = {
-            name: CameraConfig.from_dict(camera_conf, camera_name=name)
-            for name, camera_conf in cameras_raw.items()
+        streams_raw = data.get("streams", {})
+        streams = {
+            name: StreamConfig.from_dict(stream_conf, stream_name=name)
+            for name, stream_conf in streams_raw.items()
         }
         microphones_raw = data.get("microphones", {})
         microphones = {
@@ -167,7 +176,7 @@ class BirdsongConfig:
         return cls(
             database=DatabaseConfig.from_dict(data["database"]),
             config=BirdNetConfig.from_dict(data["config"]),
-            cameras=cameras,
+            streams=streams,
             microphones=microphones,
             alerts=data.get("alerts", {}),
         )

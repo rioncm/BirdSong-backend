@@ -31,7 +31,7 @@ class AnalyzeResult:
     """Structured summary of an analyzed audio recording."""
 
     input_file: Path
-    camera_id: Optional[str]
+    stream_id: Optional[str]
     timestamp: datetime
     duration_seconds: float
     frame_rate: int
@@ -103,7 +103,7 @@ class BaseAnalyzer:
         latitude: Optional[float] = None,
         longitude: Optional[float] = None,
         week_48: Optional[int] = None,
-        camera_id: Optional[str] = None,
+        stream_id: Optional[str] = None,
     ) -> AnalyzeResult:
         audio_path = Path(audio_file)
         if not audio_path.exists():
@@ -134,7 +134,7 @@ class BaseAnalyzer:
 
         result = AnalyzeResult(
             input_file=audio_path.resolve(),
-            camera_id=camera_id,
+            stream_id=stream_id,
             timestamp=datetime.now(timezone.utc),
             duration_seconds=metadata["duration_seconds"],
             frame_rate=int(metadata["frame_rate"]),
@@ -223,7 +223,7 @@ class BaseAnalyzer:
             capture_time = "unknown"
 
         summary = (
-            f"id={result.camera_id or 'unknown'} | date={capture_date} | time={capture_time} | "
+            f"id={result.stream_id or 'unknown'} | date={capture_date} | time={capture_time} | "
             f"path={result.input_file} | duration={result.duration_seconds:.2f}s | "
             f"rate={result.frame_rate}Hz | channels={result.channels} | "
             f"detections={len(result.detections)}"

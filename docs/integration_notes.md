@@ -49,5 +49,5 @@ taxon = client.lookup("Aphelocoma californica")
 ## NOAA weather updates
 - Use `lib.clients.noaa.NoaaClient` for production; expose credentials via `NOAA_API_TOKEN` and set `NOAA_USER_AGENT` or the `data_sources` headers in `config.yaml` to identify your deployment.
 - `lib.noaa.refresh_daily_forecast` and `backfill_observations` parse NOAA payloads and persist results through `store_forecast` / `store_observations`.
-- `lib.noaa.update_daily_weather_from_config` wraps the refresh/backfill cycle, selecting coordinates from the first configured microphone or camera.
+- `lib.noaa.update_daily_weather_from_config` wraps the refresh/backfill cycle, selecting coordinates from the first configured microphone or stream.
 - When testing, create a stub client implementing `get_point`, `get_forecast`, `get_observation_stations`, and `get_observations` (see `backend/tests/test_noaa.py`).

@@ -9,7 +9,7 @@ from astral import LocationInfo
 from astral.sun import sun
 
 from lib.clients.noaa import NoaaClient, NoaaClientError
-from lib.config import AppConfig, CameraConfig, MicrophoneConfig
+from lib.config import AppConfig, StreamConfig, MicrophoneConfig
 from lib.data import crud
 from lib.data.db import get_session
 
@@ -366,9 +366,9 @@ def _pick_primary_coordinates(config: AppConfig) -> Optional[Tuple[float, float]
             return float(mic.latitude), float(mic.longitude)
         return None
 
-    def _extract_from_camera(camera: CameraConfig) -> Optional[Tuple[float, float]]:
-        if camera.latitude is not None and camera.longitude is not None:
-            return float(camera.latitude), float(camera.longitude)
+    def _extract_from_stream(stream: StreamConfig) -> Optional[Tuple[float, float]]:
+        if stream.latitude is not None and stream.longitude is not None:
+            return float(stream.latitude), float(stream.longitude)
         return None
 
     for mic in birdsong.microphones.values():
@@ -376,8 +376,8 @@ def _pick_primary_coordinates(config: AppConfig) -> Optional[Tuple[float, float]
         if coords:
             return coords
 
-    for camera in birdsong.cameras.values():
-        coords = _extract_from_camera(camera)
+    for stream in birdsong.streams.values():
+        coords = _extract_from_stream(stream)
         if coords:
             return coords
 

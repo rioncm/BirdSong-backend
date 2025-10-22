@@ -196,7 +196,7 @@ def test_update_daily_weather_from_config(temp_database):
                     longitude=-119.8,
                 )
             },
-            cameras={},
+            streams={},
         )
     )
 

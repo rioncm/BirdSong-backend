@@ -25,4 +25,4 @@ Create a `recordings` table for each captured audio file and a `detections` tabl
 - `latitude`, `longitude`, `week`
 - optional metadata (sensitivity, overlap, notes, etc.), either as nullable columns or a JSON blob.
 
-Add supporting tables—for example `cameras` for capture hardware and `species` for normalised species metadata—if you need richer relationships.
+Add supporting tables—for example `streams` for capture hardware and `species` for normalised species metadata—if you need richer relationships.

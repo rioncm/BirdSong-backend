@@ -5,7 +5,7 @@ This document outlines how to populate the `days` table using NOAA National Weat
 ## 1. Prerequisites
 - NOAA no longer requires an API key, but the service still accepts one. If you have a token, expose it via the `NOAA_API_TOKEN` environment variable.
 - Include a descriptive `User-Agent` header in all requests (e.g., `BirdSong/1.0 (contact@example.com)`); populate it in `config.yaml` under `data_sources` so `initialize_environment` can pass it to the NOAA client.
-- Determine the latitude/longitude for each monitoring site (camera, microphone, or region).  
+- Determine the latitude/longitude for each monitoring site (stream, microphone, or region).  
   - Coordinates are already available in the BirdSong config; reuse them to avoid drift.
 - Decide on a primary timezone for daily aggregation (e.g., America/Los_Angeles). NOAA data is UTC; convert timestamps before writing local-day rows.
 
@@ -81,7 +81,7 @@ If the API returns sparse data, retry after a few hours—stations sometimes pub
      - Update the existing `days` row’s `actual_*` columns.
    - Use `lib.noaa.backfill_observations` with `store_observations` to persist the results.
 4. **Configuration Helper**
-   - `lib.noaa.update_daily_weather_from_config(app_config, include_actuals=True)` wraps the above calls, using the first available microphone/camera coordinates.
+   - `lib.noaa.update_daily_weather_from_config(app_config, include_actuals=True)` wraps the above calls, using the first available microphone/stream coordinates.
    - Run from the CLI with `python -m app.jobs.noaa_update --include-actuals` (optionally pass `--date YYYY-MM-DD`). The job automatically applies the `User-Agent` strings defined in `config.yaml`.
 5. **Error Handling**
    - Respect HTTP 503 retry headers (`Retry-After`).
