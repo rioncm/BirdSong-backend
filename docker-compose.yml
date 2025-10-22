@@ -4,6 +4,39 @@ services:
     image: birdsong-be:0.0.1 
     container_name: birdsong-api
     restart: unless-stopped
+    network_mode: host
+    labels:
+      - "traefik.enable=true"
+
+      #Stickey Sessions use if needed
+      - "traefik.http.services.birdsong-api.loadbalancer.sticky=true"
+      - "traefik.http.services.birdsong-api.loadbalancer.sticky.cookie.name=birdsong-api"
+      - "traefik.http.services.birdsong-api.loadbalancer.sticky.cookie.secure=true"
+
+      # HTTP Router (for redirecting to HTTPS)
+      - "traefik.http.routers.birdsong-api-http.rule=Host(`api.birdsong.diy`)"
+      - "traefik.http.routers.birdsong-api-http.entrypoints=web"
+      - "traefik.http.routers.birdsong-api-http.middlewares=birdsong-api-https-redirect"
+
+      # HTTPS Router (for handling secure traffic)
+      - "traefik.http.routers.birdsong-api.rule=Host(`api.birdsong.diy`)"
+      - "traefik.http.routers.birdsong-api.entrypoints=websecure"
+      - "traefik.http.routers.birdsong-api.tls=true"
+      - "traefik.http.routers.birdsong-api.tls.certresolver=letsencrypt"
+
+      # Redirect HTTP to HTTPS
+      - "traefik.http.middlewares.birdsong-api-https-redirect.redirectscheme.scheme=https"
+
+      # Service definition
+      - "traefik.http.services.birdsong-api.loadbalancer.server.port=8000"
+  
+
+      # Add Headers to Inform container of HTTPS
+      - "traefik.http.middlewares.birdsong-api-https-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.birdsong-api-https-headers.headers.customrequestheaders.X-Forwarded-Host=api.birdsong.diy"
+      - "traefik.http.middlewares.birdsong-api-https-headers.headers.customrequestheaders.X-Forwarded-For"
+      - "traefik.http.routers.birdsong-api.middlewares=birdsong-api-https-headers"
+
     env_file:
       - .env
     volumes:
@@ -18,7 +51,45 @@ services:
     command: >
       /bin/sh -c 'exec uvicorn api:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app'
 
+  frontend:   
+    image: birdsong-fe:0.0.1
+    network_mode: host
+    container_name: birdsong-frontend
+    restart: unless-stopped
+    ports:
+      - "4173:80"
+    labels:
+      - "traefik.enable=true"
+
+      #Stickey Sessions use if needed
+      - "traefik.http.services.birdsong-fe.loadbalancer.sticky=true"
+      - "traefik.http.services.birdsong-fe.loadbalancer.sticky.cookie.name=birdsong-fe"
+      - "traefik.http.services.birdsong-fe.loadbalancer.sticky.cookie.secure=true"
+
+      # HTTP Router (for redirecting to HTTPS)
+      - "traefik.http.routers.birdsong-fe-http.rule=Host(`birdsong.diy`)"
+      - "traefik.http.routers.birdsong-fe-http.entrypoints=web"
+      - "traefik.http.routers.birdsong-fe-http.middlewares=birdsong-fe-https-redirect"
+
+      # HTTPS Router (for handling secure traffic)
+      - "traefik.http.routers.birdsong-fe.rule=Host(`birdsong.diy`)"
+      - "traefik.http.routers.birdsong-fe.entrypoints=websecure"
+      - "traefik.http.routers.birdsong-fe.tls=true"
+      - "traefik.http.routers.birdsong-fe.tls.certresolver=letsencrypt"
+
+      # Redirect HTTP to HTTPS
+      - "traefik.http.middlewares.birdsong-fe-https-redirect.redirectscheme.scheme=https"
+
+      # Service definition
+      - "traefik.http.services.birdsong-fe.loadbalancer.server.port=80"
   
+
+      # Add Headers to Inform container of HTTPS
+      - "traefik.http.middlewares.birdsong-fe-https-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.birdsong-fe-https-headers.headers.customrequestheaders.X-Forwarded-Host=birdsong.diy"
+      - "traefik.http.middlewares.birdsong-fe-https-headers.headers.customrequestheaders.X-Forwarded-For"
+      - "traefik.http.routers.birdsong-fe.middlewares=birdsong-fe-https-headers"
+
 
   analyzer:
     image: birdsong-be:0.0.1 
