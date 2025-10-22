@@ -44,7 +44,7 @@ from lib.data.tables import (
 )
 from lib.enrichment import SpeciesEnricher, SpeciesEnrichmentError
 from lib.setup import initialize_environment
-from .schemas import (
+from lib.schemas import (
     CitationEntry,
     DayActuals,
     DayForecast,
