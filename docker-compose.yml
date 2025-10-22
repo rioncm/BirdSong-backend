@@ -27,7 +27,7 @@ services:
       - gitsync
     volumes:
       - ./config.yaml:/etc/birdsong/config.yaml:ro
-      - ./app:/app
+      - .birdsong-backend/app:/app
       - ./data:/app/data
       - ./logs:/app/logs
       - ./temp:/app/temp
