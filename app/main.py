@@ -7,14 +7,14 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-
+import os
 from lib.analyzer import BaseAnalyzer
 from lib.capture import AudioCapture
 from lib.setup import initialize_environment
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+CONFIG_PATH = os.getenv("BIRDSONG_CONFIG", PROJECT_ROOT / "config.yaml")
 
 
 def load_configuration():

@@ -23,6 +23,7 @@ class SpeciesPreview(BaseModel):
     family: Optional[str] = None
     image_url: Optional[str] = None
     image_attribution: Optional[str] = None
+    image_source_url: Optional[str] = None
     summary: Optional[str] = None
     info_url: Optional[str] = None
 
@@ -31,6 +32,7 @@ class RecordingPreview(BaseModel):
     wav_id: Optional[str] = None
     path: Optional[str] = None
     duration_seconds: Optional[float] = None
+    url: Optional[str] = None
 
 
 class DetectionItem(BaseModel):
@@ -43,6 +45,34 @@ class DetectionItem(BaseModel):
     species: SpeciesPreview
     recording: RecordingPreview
     location_hint: Optional[str] = None
+
+
+class TimelineBucket(BaseModel):
+    bucket_start: str
+    bucket_end: str
+    total_detections: int
+    unique_species: int
+    detections: List[DetectionItem]
+
+
+class DetectionTimelineResponse(BaseModel):
+    bucket_minutes: int
+    has_more: bool
+    next_cursor: Optional[str] = None
+    previous_cursor: Optional[str] = None
+    buckets: List[TimelineBucket]
+
+
+class QuarterWindow(BaseModel):
+    label: str
+    start: str
+    end: str
+
+
+class QuarterPresetsResponse(BaseModel):
+    date: str
+    current_label: Optional[str] = None
+    quarters: List[QuarterWindow]
 
 
 class DetectionFeedResponse(BaseModel):

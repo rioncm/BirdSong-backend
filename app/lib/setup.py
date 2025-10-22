@@ -425,6 +425,30 @@ def initialize_environment(
         }
         microphone_output_paths[str(microphone_id)] = mic_output_path
 
+    device_index: List[Dict[str, Any]] = []
+    for name, config in camera_configs.items():
+        output_path = camera_output_paths.get(name)
+        device_index.append(
+            {
+                "type": "camera",
+                "id": config["camera_id"],
+                "name": name,
+                "location": config["location"],
+                "path": str(output_path) if output_path is not None else None,
+            }
+        )
+    for name, config in microphone_configs.items():
+        output_path = microphone_output_paths.get(str(config["microphone_id"]))
+        device_index.append(
+            {
+                "type": "microphone",
+                "id": config["microphone_id"],
+                "name": name,
+                "location": config["location"],
+                "path": str(output_path) if output_path is not None else None,
+            }
+        )
+
     normalized_config = {
         "birdsong": {
             "database": normalized_database,
@@ -449,6 +473,7 @@ def initialize_environment(
         "camera_output_paths": camera_output_paths,
         "camera_coordinates": camera_coordinates,
         "microphone_output_paths": microphone_output_paths,
+        "device_index": device_index,
         "third_party_sources": data_source_entries,
         "data_source_headers": data_source_headers,
         "data_source_user_agents": data_source_user_agents,

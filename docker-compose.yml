@@ -5,17 +5,6 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    environment:
-      GITSYNC_REPO: https://github.com/rioncm/birdsong-backend.git
-      GITSYNC_BRANCH: ${GIT_SYNC_BRANCH:-main}
-      GITSYNC_REV: ${GIT_SYNC_REV:-HEAD}
-      GITSYNC_DEPTH: ${GIT_SYNC_DEPTH:-1}
-      GITSYNC_ROOT: /workspace
-      GITSYNC_DEST: repo
-      GITSYNC_WAIT: ${GIT_SYNC_WAIT:-300}
-      GITSYNC_ONE_TIME: ${GIT_SYNC_ONE_TIME:-false}
-      GITSYNC_MAX_SYNC_FAILURES: ${GIT_SYNC_MAX_SYNC_FAILURES:-0}
-      GITKNOWN_HOSTS: "false"
     volumes:
       - ./sync:/workspace
 
@@ -26,33 +15,15 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    environment:
-      API_LOG_LEVEL: ${API_LOG_LEVEL:-info}
     depends_on:
       - gitsync
     volumes:
+     - ./config.yaml:/etc/birdsong/config.yaml:ro
       - ./sync:/workspace:ro
-      - ./app/data:/app/data
-      - ./app/logs:/app/logs
-      - ./app/temp:/app/temp
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./temp:/app/temp
     ports:
       - "${API_PORT:-8000}:8000"
     command: >
-      /bin/sh -c '
-        CONFIG_SRC=/workspace/repo/backend/app/config.yaml;
-        ATTEMPTS=${CONFIG_SYNC_ATTEMPTS:-30};
-        SLEEP_SECONDS=${CONFIG_SYNC_WAIT_SECONDS:-2};
-        COUNT=0;
-        until [ -f "$CONFIG_SRC" ] || [ "$COUNT" -ge "$ATTEMPTS" ]; do
-          COUNT=$((COUNT + 1));
-          echo "Waiting for config sync ($COUNT/$ATTEMPTS)...";
-          sleep "$SLEEP_SECONDS";
-        done;
-        if [ -f "$CONFIG_SRC" ]; then
-          echo "Synced config found, updating /app/config.yaml";
-          cp "$CONFIG_SRC" /app/config.yaml;
-        else
-          echo "Warning: config not found at $CONFIG_SRC; using baked image config.";
-        fi;
-        exec uvicorn api:app --host 0.0.0.0 --port 8000
-      '
+      /bin/sh -c 'exec uvicorn api:app --host 0.0.0.0 --port 8000 --reload --reload-dir /workspace'

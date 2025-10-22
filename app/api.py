@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+import mimetypes
 import logging
-from datetime import date as date_cls, datetime, time as time_cls, timezone
+from collections import OrderedDict
+from datetime import date as date_cls, datetime, time as time_cls, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import yaml
 from fastapi import (
@@ -18,7 +21,9 @@ from fastapi import (
     Query,
     status,
 )
-from sqlalchemy import and_, func, select
+from fastapi.responses import FileResponse
+from starlette.routing import NoMatchFound
+from sqlalchemy import and_, func, or_, select
 
 import asyncio
 from lib.analyzer import BaseAnalyzer
@@ -47,6 +52,9 @@ from .schemas import (
     DetectionFeedResponse,
     DetectionItem,
     DetectionSummary,
+    DetectionTimelineResponse,
+    QuarterPresetsResponse,
+    QuarterWindow,
     RecordingPreview,
     SpeciesDetections,
     SpeciesDetailResponse,
@@ -57,7 +65,7 @@ from .schemas import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+CONFIG_PATH = os.getenv("BIRDSONG_CONFIG", PROJECT_ROOT / "config.yaml")
 API_KEY_HEADER = "X-API-Key"
 
 app = FastAPI(title="BirdSong Ingest API", version="1.0.0")
@@ -100,6 +108,268 @@ def _format_datetime(value: Optional[datetime]) -> Optional[str]:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone().isoformat()
+
+
+def _parse_iso_timestamp(value: str, field: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid {field} value: {value}",
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed
+
+
+def _floor_to_bucket(moment: datetime, bucket_minutes: int) -> datetime:
+    bucket_minutes = max(bucket_minutes, 1)
+    total_minutes = moment.hour * 60 + moment.minute
+    bucket_index = total_minutes // bucket_minutes
+    bucket_start_minutes = bucket_index * bucket_minutes
+    hour = bucket_start_minutes // 60
+    minute = bucket_start_minutes % 60
+    return moment.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def _resolve_device_metadata(recording_path: Optional[str], device_index: List[Dict[str, Any]]) -> tuple[Optional[str], Optional[str]]:
+    if not recording_path:
+        return None, None
+    if not device_index:
+        return None, None
+    raw_path = str(recording_path)
+    path_obj = Path(raw_path)
+    for entry in device_index:
+        entry_path = entry.get("path")
+        if not entry_path:
+            continue
+        entry_path_obj = Path(entry_path)
+        try:
+            path_obj.relative_to(entry_path_obj)
+            return entry.get("name") or entry.get("id"), entry.get("location")
+        except ValueError:
+            pass
+        if raw_path.startswith(str(entry_path_obj)):
+            return entry.get("name") or entry.get("id"), entry.get("location")
+    return None, None
+
+
+def _coerce_citation_content(raw: Any) -> Dict[str, Any]:
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            loaded = json.loads(raw)
+            if isinstance(loaded, dict):
+                return loaded
+        except json.JSONDecodeError:
+            return {"credit": raw}
+        return {}
+    return {}
+
+
+def _load_image_attributions(session, species_ids: List[str]) -> Dict[str, Dict[str, Optional[str]]]:
+    if not species_ids:
+        return {}
+    stmt = (
+        select(
+            data_citations.c.species_id,
+            data_citations.c.content,
+        )
+        .where(
+            data_citations.c.species_id.in_(species_ids),
+            data_citations.c.data_type == "image",
+        )
+        .order_by(
+            data_citations.c.species_id,
+            data_citations.c.updated_date.desc().nullslast(),
+            data_citations.c.created_date.desc(),
+        )
+    )
+    results: Dict[str, Dict[str, Optional[str]]] = {}
+    for row in session.execute(stmt).mappings():
+        species_id_value = row["species_id"]
+        if species_id_value in results:
+            continue
+        payload = _coerce_citation_content(row["content"])
+        results[species_id_value] = {
+            "attribution": payload.get("credit") or payload.get("attribution"),
+            "source_url": payload.get("source_url") or payload.get("url"),
+        }
+    return results
+
+
+def _build_quarter_windows(target_date: date_cls) -> List[QuarterWindow]:
+    quarters: List[QuarterWindow] = []
+    offsets = (
+        ("Q1", time_cls(hour=0)),
+        ("Q2", time_cls(hour=6)),
+        ("Q3", time_cls(hour=12)),
+        ("Q4", time_cls(hour=18)),
+    )
+    for index, (label, start_time) in enumerate(offsets):
+        start_dt = datetime.combine(target_date, start_time, tzinfo=timezone.utc)
+        if index + 1 < len(offsets):
+            end_time = offsets[index + 1][1]
+            end_dt = datetime.combine(target_date, end_time, tzinfo=timezone.utc)
+        else:
+            end_dt = datetime.combine(
+                target_date + timedelta(days=1),
+                time_cls(hour=0),
+                tzinfo=timezone.utc,
+            )
+        quarters.append(
+            QuarterWindow(
+                label=label,
+                start=start_dt.isoformat(),
+                end=end_dt.isoformat(),
+            )
+        )
+    return quarters
+
+
+def _build_recording_url(request: Request, wav_id: Optional[str]) -> Optional[str]:
+    if not wav_id:
+        return None
+    try:
+        return str(request.url_for("get_recording_file", wav_id=wav_id))
+    except NoMatchFound:
+        return None
+
+
+def _combine_datetime(row: Dict[str, Any]) -> Optional[datetime]:
+    row_date = row.get("date")
+    row_time = row.get("time")
+    if row_date is None and row_time is None:
+        return None
+    if row_time is None:
+        combined = datetime.combine(row_date, time_cls(0, 0))
+    else:
+        combined = datetime.combine(row_date, row_time)
+    return combined.replace(tzinfo=timezone.utc)
+
+
+def _build_detection_item(
+    row: Dict[str, Any],
+    attribution_map: Dict[str, Dict[str, Optional[str]]],
+    device_index: Sequence[Dict[str, Any]],
+    request: Request,
+) -> Tuple[DetectionItem, Optional[datetime]]:
+    recorded_at_dt = _combine_datetime(row)
+    recorded_at_value = recorded_at_dt.isoformat() if recorded_at_dt else None
+
+    species_id_value = row["species_id"]
+    attrib = attribution_map.get(species_id_value, {})
+
+    device_name, location_hint = _resolve_device_metadata(
+        row.get("recording_path"),
+        list(device_index) if device_index else [],
+    )
+
+    recording_preview = RecordingPreview(
+        wav_id=row["wav_id"],
+        path=row["recording_path"],
+        url=_build_recording_url(request, row["wav_id"]),
+    )
+
+    species_preview = SpeciesPreview(
+        id=species_id_value,
+        common_name=row["species_common_name"] or row["ident_common_name"],
+        scientific_name=row["species_scientific_name"] or row["ident_scientific_name"],
+        genus=row["genus"],
+        family=row["family"],
+        image_url=row["image_url"],
+        image_attribution=attrib.get("attribution"),
+        image_source_url=attrib.get("source_url"),
+        summary=row["ai_summary"],
+        info_url=row["info_url"],
+    )
+
+    detection_item = DetectionItem(
+        id=row["id"],
+        recorded_at=recorded_at_value,
+        device_name=device_name,
+        confidence=row["confidence"],
+        start_time=row["start_time"],
+        end_time=row["end_time"],
+        species=species_preview,
+        recording=recording_preview,
+        location_hint=location_hint,
+    )
+    return detection_item, recorded_at_dt
+
+
+def _group_detections_into_buckets(
+    rows: Sequence[Dict[str, Any]],
+    attribution_map: Dict[str, Dict[str, Optional[str]]],
+    device_index: Sequence[Dict[str, Any]],
+    request: Request,
+    bucket_minutes: int,
+) -> Tuple[List[Dict[str, Any]], List[datetime]]:
+    bucket_map: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+    all_datetimes: List[datetime] = []
+
+    items_with_time: List[Tuple[Optional[datetime], DetectionItem]] = []
+    for row in rows:
+        detection_item, detected_at = _build_detection_item(
+            row,
+            attribution_map,
+            device_index,
+            request,
+        )
+        items_with_time.append((detected_at, detection_item))
+        if detected_at is not None:
+            all_datetimes.append(detected_at)
+
+    items_with_time.sort(key=lambda entry: entry[0] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
+    for detected_at, detection in items_with_time:
+        if detected_at is None:
+            bucket_key = "unspecified"
+            bucket_start_iso = None
+            bucket_end_iso = None
+        else:
+            bucket_start = _floor_to_bucket(detected_at, bucket_minutes)
+            bucket_end = bucket_start + timedelta(minutes=bucket_minutes)
+            bucket_key = bucket_start.isoformat()
+            bucket_start_iso = bucket_start.isoformat()
+            bucket_end_iso = bucket_end.isoformat()
+
+        bucket_entry = bucket_map.get(bucket_key)
+        if bucket_entry is None:
+            bucket_entry = {
+                "bucket_start": bucket_start_iso,
+                "bucket_end": bucket_end_iso,
+                "detections": [],
+                "species_ids": set(),
+                "datetimes": [],
+            }
+            bucket_map[bucket_key] = bucket_entry
+
+        bucket_entry["detections"].append(detection)
+        bucket_entry["species_ids"].add(detection.species.id)
+        if detected_at is not None:
+            bucket_entry["datetimes"].append(detected_at)
+
+    buckets: List[Dict[str, Any]] = []
+    for entry in bucket_map.values():
+        buckets.append(
+            {
+                "bucket_start": entry["bucket_start"],
+                "bucket_end": entry["bucket_end"],
+                "detections": entry["detections"],
+                "total_detections": len(entry["detections"]),
+                "unique_species": len(entry["species_ids"]),
+                "datetimes": entry["datetimes"],
+            }
+        )
+
+    return buckets, all_datetimes
 
 
 def _find_microphone(config: AppConfig, microphone_id: str) -> Optional[MicrophoneConfig]:
@@ -375,7 +645,7 @@ def list_detections(
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=200),
 ) -> DetectionFeedResponse:
-    _ensure_state(request)
+    _, resources, *_ = _ensure_state(request)
     target_date = _parse_date_param(date, "date")
 
     session = get_session()
@@ -419,11 +689,18 @@ def list_detections(
         stmt = stmt.order_by(idents.c.date.desc(), idents.c.time.desc().nullslast())
 
         rows = session.execute(stmt).mappings().all()
+
+        species_ids = [
+            row["species_id"]
+            for row in rows
+            if row.get("species_id")
+        ]
+        image_attributions = _load_image_attributions(session, species_ids)
     finally:
         session.close()
 
     total_detections = len(rows)
-    unique_species = len({row["species_id"] for row in rows})
+    unique_species = len({row["species_id"] for row in rows if row.get("species_id")})
 
     detection_times: List[datetime] = []
     for row in rows:
@@ -445,42 +722,16 @@ def list_detections(
     paged_rows = rows[offset : offset + page_size]
 
     detection_models: List[DetectionItem] = []
-    for row in paged_rows:
-        if row["date"] is not None and row["time"] is not None:
-            recorded_at_dt = datetime.combine(row["date"], row["time"]).replace(tzinfo=timezone.utc)
-            recorded_at_value = recorded_at_dt.isoformat()
-        elif row["date"] is not None:
-            recorded_at_value = datetime.combine(row["date"], time_cls(0, 0)).replace(
-                tzinfo=timezone.utc
-            ).isoformat()
-        else:
-            recorded_at_value = None
+    device_index = resources.get("device_index", []) if isinstance(resources, dict) else []
 
-        detection_models.append(
-            DetectionItem(
-                id=row["id"],
-                recorded_at=recorded_at_value,
-                device_name=None,
-                confidence=row["confidence"],
-                start_time=row["start_time"],
-                end_time=row["end_time"],
-                species=SpeciesPreview(
-                    id=row["species_id"],
-                    common_name=row["species_common_name"] or row["ident_common_name"],
-                    scientific_name=row["species_scientific_name"] or row["ident_scientific_name"],
-                    genus=row["genus"],
-                    family=row["family"],
-                    image_url=row["image_url"],
-                    summary=row["ai_summary"],
-                    info_url=row["info_url"],
-                ),
-                recording=RecordingPreview(
-                    wav_id=row["wav_id"],
-                    path=row["recording_path"],
-                ),
-                location_hint="unknown",
-            )
+    for row in paged_rows:
+        detection_item, _ = _build_detection_item(
+            row,
+            image_attributions,
+            device_index,
+            request,
         )
+        detection_models.append(detection_item)
 
     summary = DetectionSummary(
         total_detections=total_detections,
@@ -498,6 +749,249 @@ def list_detections(
         summary=summary,
         detections=detection_models,
     )
+
+
+@app.get(
+    "/detections/timeline",
+    response_model=DetectionTimelineResponse,
+    summary="Fetch detections grouped into fixed time buckets",
+)
+def timeline_detections(
+    request: Request,
+    before: Optional[str] = Query(
+        None,
+        description="Return buckets strictly before this ISO timestamp (UTC).",
+    ),
+    after: Optional[str] = Query(
+        None,
+        description="Return buckets strictly after this ISO timestamp (UTC).",
+    ),
+    limit: int = Query(
+        24,
+        ge=1,
+        le=288,
+        description="Maximum number of buckets to return.",
+    ),
+    bucket_minutes: int = Query(
+        5,
+        ge=1,
+        le=120,
+        description="Bucket size in minutes.",
+    ),
+) -> DetectionTimelineResponse:
+    _, resources, *_ = _ensure_state(request)
+
+    if before and after:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Specify only one of 'before' or 'after'.",
+        )
+
+    before_dt = _parse_iso_timestamp(before, "before") if before else None
+    after_dt = _parse_iso_timestamp(after, "after") if after else None
+
+    time_string_expr = func.coalesce(func.strftime("%H:%M:%S", idents.c.time), "00:00:00")
+    timestamp_expr = func.datetime(idents.c.date, time_string_expr)
+
+    fetch_limit = max(limit * 20, 200)
+
+    session = get_session()
+    try:
+        stmt = (
+            select(
+                idents.c.id,
+                idents.c.date,
+                idents.c.time,
+                idents.c.common_name.label("ident_common_name"),
+                idents.c.sci_name.label("ident_scientific_name"),
+                idents.c.confidence,
+                idents.c.start_time,
+                idents.c.end_time,
+                idents.c.wav_id,
+                recordings.c.path.label("recording_path"),
+                species.c.id.label("species_id"),
+                species.c.common_name.label("species_common_name"),
+                species.c.sci_name.label("species_scientific_name"),
+                species.c.genus,
+                species.c.family,
+                species.c.image_url,
+                species.c.info_url,
+                species.c.ai_summary,
+                timestamp_expr.label("detected_ts"),
+            )
+            .join(species, idents.c.species_id == species.c.id)
+            .join(recordings, idents.c.wav_id == recordings.c.wav_id, isouter=True)
+        )
+
+        if before_dt:
+            before_str = before_dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            stmt = stmt.where(timestamp_expr < before_str)
+        if after_dt:
+            after_str = after_dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            stmt = stmt.where(timestamp_expr > after_str)
+
+        if after_dt:
+            stmt = stmt.order_by(idents.c.date.asc(), idents.c.time.asc().nullsfirst())
+        else:
+            stmt = stmt.order_by(idents.c.date.desc(), idents.c.time.desc().nullslast())
+
+        rows = session.execute(stmt.limit(fetch_limit)).mappings().all()
+
+        if after_dt:
+            rows = list(reversed(rows))
+
+        species_ids = [row["species_id"] for row in rows if row.get("species_id")]
+        image_attributions = _load_image_attributions(session, species_ids)
+    finally:
+        session.close()
+
+    device_index = resources.get("device_index", []) if isinstance(resources, dict) else []
+
+    buckets_raw, all_datetimes = _group_detections_into_buckets(
+        rows,
+        image_attributions,
+        device_index,
+        request,
+        bucket_minutes,
+    )
+
+    has_more = len(buckets_raw) > limit
+    if has_more:
+        buckets_raw = buckets_raw[:limit]
+
+    next_cursor = None
+    previous_cursor = None
+
+    if buckets_raw:
+        oldest_times: List[datetime] = []
+        newest_times: List[datetime] = []
+        for idx, bucket in enumerate(buckets_raw):
+            bucket_times = bucket.get("datetimes") or []
+            if not bucket_times:
+                continue
+            if idx == 0:
+                newest_times.extend(bucket_times)
+            oldest_times.extend(bucket_times)
+        if oldest_times:
+            oldest_dt = min(oldest_times)
+            next_cursor = oldest_dt.isoformat()
+        if newest_times:
+            newest_dt = max(newest_times)
+            previous_cursor = newest_dt.isoformat()
+
+    buckets_response: List[TimelineBucket] = []
+    for bucket in buckets_raw:
+        bucket.pop("datetimes", None)
+        detections = bucket["detections"]
+        buckets_response.append(
+            TimelineBucket(
+                bucket_start=bucket["bucket_start"],
+                bucket_end=bucket["bucket_end"],
+                total_detections=bucket["total_detections"],
+                unique_species=bucket["unique_species"],
+                detections=detections,
+            )
+        )
+
+    return DetectionTimelineResponse(
+        bucket_minutes=bucket_minutes,
+        has_more=has_more,
+        next_cursor=next_cursor,
+        previous_cursor=previous_cursor,
+        buckets=buckets_response,
+    )
+
+
+@app.get(
+    "/health",
+    summary="Simple readiness probe.",
+)
+def health_check(request: Request) -> Dict[str, Any]:
+    _ensure_state(request)
+    now = datetime.now(timezone.utc)
+    return {"status": "ok", "timestamp": now.isoformat()}
+
+
+@app.get(
+    "/detections/quarters",
+    response_model=QuarterPresetsResponse,
+    summary="List the four standard quarter-day windows for a given date.",
+)
+def list_quarter_presets(
+    request: Request,
+    date: Optional[str] = Query(
+        None,
+        description="Date in YYYY-MM-DD (defaults to current UTC date).",
+    ),
+) -> QuarterPresetsResponse:
+    _ensure_state(request)
+    target_date = _parse_date_param(date, "date") or datetime.now(timezone.utc).date()
+
+    quarters = _build_quarter_windows(target_date)
+
+    current_label: Optional[str] = None
+    now_utc = datetime.now(timezone.utc)
+    if target_date < now_utc.date():
+        current_label = "Q4"
+    elif target_date > now_utc.date():
+        current_label = quarters[0].label if quarters else None
+    else:
+        for window in quarters:
+            start_dt = datetime.fromisoformat(window.start)
+            end_dt = datetime.fromisoformat(window.end)
+            if start_dt <= now_utc < end_dt:
+                current_label = window.label
+                break
+        if current_label is None and quarters:
+            current_label = quarters[-1].label
+
+    return QuarterPresetsResponse(
+        date=target_date.isoformat(),
+        current_label=current_label,
+        quarters=quarters,
+    )
+
+
+@app.get(
+    "/recordings/{wav_id}",
+    name="get_recording_file",
+    summary="Download a stored recording by its identifier.",
+)
+def get_recording_file(wav_id: str) -> FileResponse:
+    session = get_session()
+    try:
+        row = (
+            session.execute(
+                select(recordings.c.path).where(recordings.c.wav_id == wav_id)
+            )
+            .mappings()
+            .first()
+        )
+    finally:
+        session.close()
+
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recording not found",
+        )
+
+    raw_path = row["path"]
+    if not raw_path:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recording path unavailable",
+        )
+
+    file_path = Path(raw_path).expanduser()
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recording file not found on disk",
+        )
+
+    media_type, _ = mimetypes.guess_type(file_path.name)
+    return FileResponse(file_path, media_type=media_type or "audio/wav")
 
 
 @app.get("/species/{species_id}", response_model=SpeciesDetailResponse)
