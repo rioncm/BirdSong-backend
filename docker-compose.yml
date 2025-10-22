@@ -1,12 +1,20 @@
 
 services:
-  gitsync:
-    image: registry.k8s.io/git-sync/git-sync:v4.1.0
-    restart: unless-stopped
-    env_file:
-      - .env
-    volumes:
-      - ./sync:/workspace
+  # gitsync:
+  #   image: registry.k8s.io/git-sync/git-sync:v4.1.0
+  #   restart: unless-stopped
+  #   environment:
+  #     GIT_SYNC_REPO: https://github.com/rioncm/birdsong-backend.git
+  #     GIT_SYNC_BRANCH: main
+  #     GIT_SYNC_REV: HEAD
+  #     GIT_SYNC_ROOT: /workspace
+  #     GIT_SYNC_DEST: repo
+  #     GIT_SYNC_ONE_TIME: false
+  #     GIT_SYNC_WAIT: 30
+  #     GIT_SYNC_SSH: false
+  #     GIT_KNOWN_HOSTS: false
+  #   volumes:
+  #     - ./sync:/workspace
 
   backend:
     build:
@@ -18,12 +26,12 @@ services:
     depends_on:
       - gitsync
     volumes:
-     - ./config.yaml:/etc/birdsong/config.yaml
-      - ./sync:/workspace
+      - ./config.yaml:/etc/birdsong/config.yaml:ro
+      - ./app:/app
       - ./data:/app/data
       - ./logs:/app/logs
       - ./temp:/app/temp
     ports:
       - "${API_PORT:-8000}:8000"
     command: >
-      /bin/sh -c 'exec uvicorn api:app --host 0.0.0.0 --port 8000 --reload --reload-dir /workspace'
+      /bin/sh -c 'exec uvicorn api:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app'
