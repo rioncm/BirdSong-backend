@@ -65,7 +65,8 @@ from lib.schemas import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-CONFIG_PATH = os.getenv("BIRDSONG_CONFIG", PROJECT_ROOT / "config.yaml")
+_config_override = os.getenv("BIRDSONG_CONFIG")
+CONFIG_PATH = Path(_config_override) if _config_override else PROJECT_ROOT / "config.yaml"
 API_KEY_HEADER = "X-API-Key"
 
 app = FastAPI(title="BirdSong Ingest API", version="1.0.0")
