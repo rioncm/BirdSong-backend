@@ -18,8 +18,8 @@ services:
     depends_on:
       - gitsync
     volumes:
-     - ./config.yaml:/etc/birdsong/config.yaml:ro
-      - ./sync:/workspace:ro
+     - ./config.yaml:/etc/birdsong/config.yaml
+      - ./sync:/workspace
       - ./data:/app/data
       - ./logs:/app/logs
       - ./temp:/app/temp
