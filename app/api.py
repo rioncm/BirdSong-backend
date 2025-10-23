@@ -56,6 +56,7 @@ from lib.schemas import (
     DetectionItem,
     DetectionSummary,
     DetectionTimelineResponse,
+    TimelineBucket,
     QuarterPresetsResponse,
     QuarterWindow,
     RecordingPreview,
