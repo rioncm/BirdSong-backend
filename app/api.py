@@ -44,6 +44,7 @@ from lib.data.tables import (
     species,
 )
 from lib.enrichment import SpeciesEnricher, SpeciesEnrichmentError
+from lib.persistence import persist_analysis_results
 from lib.setup import initialize_environment
 from lib.schemas import (
     CitationEntry,
@@ -630,6 +631,24 @@ async def ingest_microphone_audio(
         }
         for detection in analysis.detections
     ]
+
+    if analysis.detections:
+        try:
+            persist_analysis_results(
+                analysis,
+                analysis.detections,
+                source_id=microphone.microphone_id,
+                source_name=name or microphone.location or microphone.microphone_id,
+                source_location=microphone.location,
+                species_enricher=species_enricher,
+                species_id_map=species_id_map,
+            )
+        except Exception as exc:  # noqa: BLE001 - log and continue response
+            logger.warning(
+                "Failed to persist detections for microphone '%s': %s",
+                microphone.microphone_id,
+                exc,
+            )
 
     return {
         "microphone_id": microphone.microphone_id,

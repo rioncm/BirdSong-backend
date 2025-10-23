@@ -27,6 +27,7 @@ app/microphones/
 node_modules/
 build/
 dist/
+.priv/
 
 # Runtime files
 *.db

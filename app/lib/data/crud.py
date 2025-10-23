@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Any, Dict, Optional
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import and_, func, insert, select, update
 from sqlalchemy.orm import Session
 
-from .tables import data_citations, data_sources, days, species
+from .tables import data_citations, data_sources, days, idents, recordings, species
 
 
 def generate_species_id(scientific_name: str) -> str:
@@ -98,6 +98,92 @@ def upsert_data_citation(
                 updated_date=timestamp,
             )
         )
+
+
+def ensure_day(session: Session, target_date: date) -> int:
+    row = session.execute(
+        select(days.c.date_id).where(days.c.date == target_date)
+    ).first()
+    if row is not None:
+        return int(row[0])
+
+    result = session.execute(
+        insert(days).values(date=target_date)
+    )
+    day_id = result.inserted_primary_key[0] if result.inserted_primary_key else None
+    if day_id is None:
+        row = session.execute(
+            select(days.c.date_id).where(days.c.date == target_date)
+        ).first()
+        if row is None:
+            raise RuntimeError("Failed to create day record")
+        return int(row[0])
+    return int(day_id)
+
+
+def ensure_recording(session: Session, wav_id: str, path: str) -> None:
+    existing = session.execute(
+        select(recordings.c.wav_id, recordings.c.path).where(recordings.c.wav_id == wav_id)
+    ).mappings().first()
+    if existing:
+        if existing.get("path") != path:
+            session.execute(
+                update(recordings)
+                .where(recordings.c.wav_id == wav_id)
+                .values(path=path)
+            )
+        return
+
+    session.execute(
+        insert(recordings).values(
+            wav_id=wav_id,
+            path=path,
+        )
+    )
+
+
+def insert_detection(
+    session: Session,
+    *,
+    day_id: int,
+    species_id: str,
+    date_value: date,
+    time_value: Optional[time],
+    common_name: Optional[str],
+    scientific_name: str,
+    confidence: Optional[float],
+    wav_id: Optional[str],
+    start_time: Optional[float],
+    end_time: Optional[float],
+) -> bool:
+    existing = session.execute(
+        select(idents.c.id).where(
+            and_(
+                idents.c.wav_id == wav_id,
+                idents.c.species_id == species_id,
+                idents.c.start_time == start_time,
+                idents.c.end_time == end_time,
+            )
+        )
+    ).first()
+    if existing:
+        return False
+
+    session.execute(
+        insert(idents).values(
+            date_id=day_id,
+            species_id=species_id,
+            date=date_value,
+            time=time_value,
+            common_name=common_name,
+            sci_name=scientific_name,
+            confidence=confidence,
+            wav_id=wav_id,
+            start_time=start_time,
+            end_time=end_time,
+        )
+    )
+    return True
 
 
 def get_day(session: Session, target_date: date) -> Optional[Dict[str, Any]]:

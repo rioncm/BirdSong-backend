@@ -4,18 +4,48 @@ import argparse
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 import yaml
 import os
 from lib.analyzer import BaseAnalyzer
 from lib.capture import AudioCapture
+from lib.clients import WikimediaClient
+from lib.enrichment import SpeciesEnricher
+from lib.persistence import persist_analysis_results
 from lib.setup import initialize_environment
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 _config_override = os.getenv("BIRDSONG_CONFIG")
 CONFIG_PATH = Path(_config_override) if _config_override else PROJECT_ROOT / "config.yaml"
+
+
+def _build_species_enricher(resources: dict) -> SpeciesEnricher:
+    headers_map: Dict[str, Dict[str, str]] = {}
+    user_agent_map: Dict[str, Optional[str]] = {}
+
+    raw_headers = resources.get("data_source_headers")
+    if isinstance(raw_headers, dict):
+        headers_map = {
+            str(key): dict(value)
+            for key, value in raw_headers.items()
+            if isinstance(value, dict)
+        }
+
+    raw_user_agents = resources.get("data_source_user_agents")
+    if isinstance(raw_user_agents, dict):
+        user_agent_map = {
+            str(key): value
+            for key, value in raw_user_agents.items()
+            if value
+        }
+
+    wikimedia_headers = headers_map.get("Wikimedia Commons", {})
+    wikimedia_user_agent = user_agent_map.get("Wikimedia Commons") or wikimedia_headers.get("User-Agent")
+    wikimedia_client = WikimediaClient(user_agent=wikimedia_user_agent) if wikimedia_user_agent else None
+
+    return SpeciesEnricher(wikimedia_client=wikimedia_client)
 
 
 def load_configuration():
@@ -34,12 +64,13 @@ def run_capture_loop(
     When max_runtime is provided, the loop stops after the given number
     of seconds—handy for testing to avoid long-running sessions.
     """
-    app_config, _resources = load_configuration()
+    app_config, resources = load_configuration()
     birdnet_config = app_config.birdsong.config
     analyzer = BaseAnalyzer(
         birdnet_config=birdnet_config,
         log_path=PROJECT_ROOT / "logs" / "analyzer.log",
     )
+    species_enricher = _build_species_enricher(resources)
     start_time = time.monotonic()
 
     while True:
@@ -67,6 +98,19 @@ def run_capture_loop(
                         f"    Top detection: {top_detection.common_name} "
                         f"({top_detection.confidence:.2f})"
                     )
+                    try:
+                        inserted = persist_analysis_results(
+                            analyze_result,
+                            analyze_result.detections,
+                            source_id=stream_config.stream_id,
+                            source_name=stream_name,
+                            source_location=stream_config.location,
+                            species_enricher=species_enricher,
+                        )
+                        if inserted:
+                            print(f"    Stored {inserted} detections.")
+                    except Exception as persist_exc:  # noqa: BLE001
+                        print(f"    Persistence failed: {persist_exc}")
                 else:
                     print("    No detections above threshold.")
             except Exception as exc:  # noqa: BLE001 - top-level loop should never crash
