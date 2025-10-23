@@ -526,7 +526,7 @@ async def ingest_microphone_audio(
         "ears.request",
         extra={
             "microphone_id": microphone.microphone_id,
-            "name": name,
+            "friendly_name": name,
             "latitude": latitude,
             "longitude": longitude,
         },
@@ -668,6 +668,25 @@ async def ingest_microphone_audio(
         for detection in analysis.detections
     ]
 
+    stored_path: Optional[str] = str(destination_path)
+    if not analysis.detections:
+        try:
+            destination_path.unlink(missing_ok=True)
+            stored_path = None
+            debug_logger.debug(
+                "ears.cleanup_deleted",
+                extra={"microphone_id": microphone.microphone_id, "path": str(destination_path)},
+            )
+        except OSError as cleanup_exc:
+            debug_logger.warning(
+                "ears.cleanup_failed",
+                extra={
+                    "microphone_id": microphone.microphone_id,
+                    "path": str(destination_path),
+                    "error": str(cleanup_exc),
+                },
+            )
+
     if analysis.detections:
         try:
             inserted = persist_analysis_results(
@@ -704,7 +723,7 @@ async def ingest_microphone_audio(
     return {
         "microphone_id": microphone.microphone_id,
         "name": name or microphone.location,
-        "stored_path": str(destination_path),
+        "stored_path": stored_path,
         "analyzed_at": analysis.timestamp.astimezone().isoformat(),
         "duration_seconds": analysis.duration_seconds,
         "sample_rate": analysis.frame_rate,

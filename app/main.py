@@ -162,6 +162,27 @@ def run_capture_loop(
                             "wav_path": str(output_path),
                         },
                     )
+                    try:
+                        output_path.unlink(missing_ok=True)
+                        DEBUG_LOGGER.debug(
+                            "capture.cleanup_deleted",
+                            extra={
+                                "stream_name": stream_name,
+                                "stream_id": stream_config.stream_id,
+                                "wav_path": str(output_path),
+                            },
+                        )
+                        print(f"    Removed recording with no detections: {output_path}")
+                    except OSError as cleanup_exc:
+                        DEBUG_LOGGER.warning(
+                            "capture.cleanup_failed",
+                            extra={
+                                "stream_name": stream_name,
+                                "stream_id": stream_config.stream_id,
+                                "wav_path": str(output_path),
+                                "error": str(cleanup_exc),
+                            },
+                        )
             except Exception as exc:  # noqa: BLE001 - top-level loop should never crash
                 print(f"    Analysis failed: {exc}")
                 DEBUG_LOGGER.exception(

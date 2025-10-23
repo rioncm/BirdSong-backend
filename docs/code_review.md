@@ -11,7 +11,8 @@
   - Docs: `backend/docs/features.md` (“notify all first detections”, “notify on configured long interval”) and `backend/docs/notifications_plan.md` describe analyzer-triggered alerts for every ingest path.  
   - Reality: `run_capture_loop` stores detections but never calls `AlertEngine` or `NotificationService` (`backend/app/main.py:76-115`). Only the `/ears` endpoint fires alerts (`backend/app/api.py:600-614`), so automated stream captures will never send notifications.
 
-- **Medium – WAV cleanup for empty detections not implemented**  
+- **Medium – WAV cleanup for empty detections not implemented** 
+    **COMPLETED**
   - Docs: `backend/docs/analyze_flow.md` (“Source WAV is deleted unless the capture policy forces retention”) and `backend/docs/features.md` (“discard files without matches”).  
   - Reality: both the stream loop and the `/ears` upload retain every file regardless of detection outcome (`backend/app/main.py:88-115`, `backend/app/api.py:529-618`), leading to unbounded storage growth contrary to the plan.
 
