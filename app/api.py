@@ -44,6 +44,7 @@ from lib.data.tables import (
     species,
 )
 from lib.enrichment import SpeciesEnricher, SpeciesEnrichmentError
+from lib.logging_utils import setup_debug_logging
 from lib.persistence import persist_analysis_results
 from lib.setup import initialize_environment
 from lib.schemas import (
@@ -72,6 +73,8 @@ CONFIG_PATH = Path(_config_override) if _config_override else PROJECT_ROOT / "co
 API_KEY_HEADER = "X-API-Key"
 
 app = FastAPI(title="BirdSong Ingest API", version="1.0.0")
+setup_debug_logging(PROJECT_ROOT)
+debug_logger = logging.getLogger("birdsong.debug.api")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -519,6 +522,16 @@ async def ingest_microphone_audio(
             detail="Invalid API key",
         )
 
+    debug_logger.info(
+        "ears.request",
+        extra={
+            "microphone_id": microphone.microphone_id,
+            "name": name,
+            "latitude": latitude,
+            "longitude": longitude,
+        },
+    )
+
     mic_output_paths_obj = resources.get("microphone_output_paths")
     if isinstance(mic_output_paths_obj, dict):
         mic_output_paths = mic_output_paths_obj
@@ -549,6 +562,14 @@ async def ingest_microphone_audio(
 
     destination_path.write_bytes(file_bytes)
     await wav.close()
+    debug_logger.debug(
+        "ears.file_stored",
+        extra={
+            "microphone_id": microphone.microphone_id,
+            "path": str(destination_path),
+            "bytes": len(file_bytes),
+        },
+    )
 
     lat_value = _parse_optional_float(latitude, "latitude") or microphone.latitude
     lon_value = _parse_optional_float(longitude, "longitude") or microphone.longitude
@@ -565,6 +586,14 @@ async def ingest_microphone_audio(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Analysis failed: {exc}",
         ) from exc
+    debug_logger.debug(
+        "ears.analysis_complete",
+        extra={
+            "microphone_id": microphone.microphone_id,
+            "detections": len(analysis.detections),
+            "duration": analysis.duration_seconds,
+        },
+    )
 
     unique_species = {}
     for detection in analysis.detections:
@@ -612,6 +641,13 @@ async def ingest_microphone_audio(
                     "location": microphone.location,
                 }
             )
+        debug_logger.debug(
+            "ears.alerts_dispatched",
+            extra={
+                "microphone_id": microphone.microphone_id,
+                "detections": len(analysis.detections),
+            },
+        )
 
     detection_payload = [
         {
@@ -634,7 +670,7 @@ async def ingest_microphone_audio(
 
     if analysis.detections:
         try:
-            persist_analysis_results(
+            inserted = persist_analysis_results(
                 analysis,
                 analysis.detections,
                 source_id=microphone.microphone_id,
@@ -643,11 +679,26 @@ async def ingest_microphone_audio(
                 species_enricher=species_enricher,
                 species_id_map=species_id_map,
             )
+            debug_logger.info(
+                "ears.persistence_complete",
+                extra={
+                    "microphone_id": microphone.microphone_id,
+                    "inserted": inserted,
+                    "path": str(destination_path),
+                },
+            )
         except Exception as exc:  # noqa: BLE001 - log and continue response
             logger.warning(
                 "Failed to persist detections for microphone '%s': %s",
                 microphone.microphone_id,
                 exc,
+            )
+            debug_logger.exception(
+                "ears.persistence_error",
+                extra={
+                    "microphone_id": microphone.microphone_id,
+                    "path": str(destination_path),
+                },
             )
 
     return {

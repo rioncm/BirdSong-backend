@@ -7,6 +7,7 @@ from .config import BirdNetConfig, StreamConfig
 
 
 logger = logging.getLogger(__name__)
+debug_logger = logging.getLogger("birdsong.debug.capture")
 
 
 class AudioCapture:
@@ -51,6 +52,15 @@ class AudioCapture:
     def capture(self) -> None:
         self.output_file.parent.mkdir(parents=True, exist_ok=True)
         cmd = self._build_command()
+        debug_logger.debug(
+            "capture.ffmpeg_start",
+            extra={
+                "stream_id": self.stream_config.stream_id,
+                "kind": self.stream_config.kind,
+                "output": str(self.output_file),
+                "command": cmd,
+            },
+        )
 
         result = subprocess.run(cmd)  # noqa: PLW1510 - ffmpeg output is user-facing
         if result.returncode != 0:
@@ -59,4 +69,20 @@ class AudioCapture:
                 result.returncode,
                 self.stream_config.url,
                 self.output_file,
+            )
+            debug_logger.error(
+                "capture.ffmpeg_error",
+                extra={
+                    "stream_id": self.stream_config.stream_id,
+                    "return_code": result.returncode,
+                    "output": str(self.output_file),
+                },
+            )
+        else:
+            debug_logger.debug(
+                "capture.ffmpeg_success",
+                extra={
+                    "stream_id": self.stream_config.stream_id,
+                    "output": str(self.output_file),
+                },
             )

@@ -14,6 +14,7 @@ from lib.enrichment import SpeciesEnricher, SpeciesEnrichmentError
 
 
 logger = logging.getLogger("birdsong.persistence")
+debug_logger = logging.getLogger("birdsong.debug.persistence")
 
 
 def persist_analysis_results(
@@ -45,6 +46,15 @@ def persist_analysis_results(
     try:
         day_id = crud.ensure_day(session, detection_date)
         crud.ensure_recording(session, wav_id, str(wav_path))
+        debug_logger.debug(
+            "persistence.context_ready",
+            extra={
+                "wav_id": wav_id,
+                "day_id": day_id,
+                "date": detection_date.isoformat(),
+                "time": detection_time.isoformat() if detection_time else None,
+            },
+        )
 
         for detection in detections:
             scientific = (detection.scientific_name or detection.label or "").strip()
@@ -78,6 +88,26 @@ def persist_analysis_results(
             )
             if created:
                 inserted += 1
+                debug_logger.debug(
+                    "persistence.detection_inserted",
+                    extra={
+                        "wav_id": wav_id,
+                        "species_id": species_id,
+                        "confidence": detection.confidence,
+                        "start_time": detection.start_time,
+                        "end_time": detection.end_time,
+                    },
+                )
+            else:
+                debug_logger.debug(
+                    "persistence.detection_skipped_duplicate",
+                    extra={
+                        "wav_id": wav_id,
+                        "species_id": species_id,
+                        "start_time": detection.start_time,
+                        "end_time": detection.end_time,
+                    },
+                )
 
         session.commit()
     except SQLAlchemyError:
@@ -95,6 +125,15 @@ def persist_analysis_results(
             source_location or "unknown-location",
             detection_date.isoformat(),
         )
+    debug_logger.info(
+        "persistence.summary",
+        extra={
+            "wav_id": wav_id,
+            "source_id": source_id,
+            "inserted": inserted,
+            "total_detections": len(detections),
+        },
+    )
     return inserted
 
 
@@ -131,6 +170,10 @@ def _ensure_species(
                 scientific,
                 exc,
             )
+            debug_logger.warning(
+                "persistence.enrichment_failed",
+                extra={"scientific_name": scientific, "reason": str(exc)},
+            )
 
     species_id = crud.generate_species_id(scientific)
     payload = {
@@ -139,4 +182,8 @@ def _ensure_species(
         "common_name": detection.common_name or detection.label,
     }
     crud.upsert_species(session, payload)
+    debug_logger.debug(
+        "persistence.species_upserted",
+        extra={"species_id": species_id, "scientific_name": scientific},
+    )
     return species_id

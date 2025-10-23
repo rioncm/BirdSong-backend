@@ -12,6 +12,7 @@ from lib.analyzer import BaseAnalyzer
 from lib.capture import AudioCapture
 from lib.clients import WikimediaClient
 from lib.enrichment import SpeciesEnricher
+from lib.logging_utils import setup_debug_logging
 from lib.persistence import persist_analysis_results
 from lib.setup import initialize_environment
 
@@ -19,6 +20,7 @@ from lib.setup import initialize_environment
 PROJECT_ROOT = Path(__file__).resolve().parent
 _config_override = os.getenv("BIRDSONG_CONFIG")
 CONFIG_PATH = Path(_config_override) if _config_override else PROJECT_ROOT / "config.yaml"
+DEBUG_LOGGER = setup_debug_logging(PROJECT_ROOT)
 
 
 def _build_species_enricher(resources: dict) -> SpeciesEnricher:
@@ -64,6 +66,10 @@ def run_capture_loop(
     When max_runtime is provided, the loop stops after the given number
     of seconds—handy for testing to avoid long-running sessions.
     """
+    DEBUG_LOGGER.info(
+        "capture_loop.start",
+        extra={"max_runtime": max_runtime, "loop_interval": loop_interval},
+    )
     app_config, resources = load_configuration()
     birdnet_config = app_config.birdsong.config
     analyzer = BaseAnalyzer(
@@ -75,6 +81,14 @@ def run_capture_loop(
 
     while True:
         for stream_name, stream_config in app_config.birdsong.streams.items():
+            DEBUG_LOGGER.debug(
+                "capture_loop.stream_tick",
+                extra={
+                    "stream_name": stream_name,
+                    "stream_id": stream_config.stream_id,
+                    "kind": stream_config.kind,
+                },
+            )
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             output_path = Path(stream_config.output_folder) / f"{timestamp}.wav"
             capture = AudioCapture(
@@ -91,6 +105,16 @@ def run_capture_loop(
                     latitude=stream_config.latitude,
                     longitude=stream_config.longitude,
                     stream_id=stream_config.stream_id,
+                )
+                DEBUG_LOGGER.debug(
+                    "analysis.complete",
+                    extra={
+                        "stream_name": stream_name,
+                        "stream_id": stream_config.stream_id,
+                        "detections": len(analyze_result.detections),
+                        "duration": analyze_result.duration_seconds,
+                        "frame_rate": analyze_result.frame_rate,
+                    },
                 )
                 if analyze_result.detections:
                     top_detection = analyze_result.detections[0]
@@ -109,12 +133,45 @@ def run_capture_loop(
                         )
                         if inserted:
                             print(f"    Stored {inserted} detections.")
+                        DEBUG_LOGGER.info(
+                            "persistence.complete",
+                            extra={
+                                "stream_name": stream_name,
+                                "stream_id": stream_config.stream_id,
+                                "inserted": inserted,
+                                "wav_path": str(output_path),
+                            },
+                        )
                     except Exception as persist_exc:  # noqa: BLE001
                         print(f"    Persistence failed: {persist_exc}")
+                        DEBUG_LOGGER.exception(
+                            "persistence.error",
+                            extra={
+                                "stream_name": stream_name,
+                                "stream_id": stream_config.stream_id,
+                                "wav_path": str(output_path),
+                            },
+                        )
                 else:
                     print("    No detections above threshold.")
+                    DEBUG_LOGGER.debug(
+                        "analysis.no_detections",
+                        extra={
+                            "stream_name": stream_name,
+                            "stream_id": stream_config.stream_id,
+                            "wav_path": str(output_path),
+                        },
+                    )
             except Exception as exc:  # noqa: BLE001 - top-level loop should never crash
                 print(f"    Analysis failed: {exc}")
+                DEBUG_LOGGER.exception(
+                    "analysis.error",
+                    extra={
+                        "stream_name": stream_name,
+                        "stream_id": stream_config.stream_id,
+                        "wav_path": str(output_path),
+                    },
+                )
 
             if max_runtime is not None:
                 elapsed = time.monotonic() - start_time
@@ -123,6 +180,7 @@ def run_capture_loop(
                         f"Reached max runtime ({max_runtime}s). "
                         "Stopping capture loop."
                     )
+                    DEBUG_LOGGER.info("capture_loop.stop", extra={"reason": "max_runtime"})
                     return
         time.sleep(loop_interval)
 
