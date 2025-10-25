@@ -24,6 +24,7 @@ def persist_analysis_results(
     source_id: Optional[str],
     source_name: Optional[str],
     source_location: Optional[str] = None,
+    source_display_name: Optional[str] = None,
     species_enricher: Optional[SpeciesEnricher] = None,
     species_id_map: Optional[Dict[str, str]] = None,
 ) -> int:
@@ -45,7 +46,15 @@ def persist_analysis_results(
     session = get_session()
     try:
         day_id = crud.ensure_day(session, detection_date)
-        crud.ensure_recording(session, wav_id, str(wav_path))
+        crud.ensure_recording(
+            session,
+            wav_id,
+            str(wav_path),
+            source_id=source_id or analysis.stream_id,
+            source_name=source_name,
+            source_display_name=source_display_name or source_name or source_id,
+            source_location=source_location,
+        )
         debug_logger.debug(
             "persistence.context_ready",
             extra={

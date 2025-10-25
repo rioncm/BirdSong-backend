@@ -85,6 +85,10 @@ recordings = Table(
     metadata,
     Column("wav_id", String(255), primary_key=True),
     Column("path", String(1024), nullable=False, unique=True),
+    Column("source_id", String(128)),
+    Column("source_name", String(255)),
+    Column("source_display_name", String(255)),
+    Column("source_location", String(255)),
     Column("created_at", DateTime, default=datetime.utcnow, nullable=False),
 )
 

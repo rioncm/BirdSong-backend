@@ -128,6 +128,7 @@ def run_capture_loop(
                             analyze_result.detections,
                             source_id=stream_config.stream_id,
                             source_name=stream_name,
+                            source_display_name=stream_config.display_name,
                             source_location=stream_config.location,
                             species_enricher=species_enricher,
                         )

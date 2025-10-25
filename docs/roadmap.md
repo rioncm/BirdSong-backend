@@ -1,33 +1,108 @@
-# BirdSong Roadmap
+# Version 1.1
+Priority work to be completed for a 1.1 release. These items were identified in a prior code review. Completion status should be verified before starting. Documentation references for backend/docs is no longer valid. Older documents have been moved to backend/docs/archive.
 
-This document outlines the major feature milestones for the project. Version numbers capture meaningful backend capability changes; minor bugfixes are tracked in PR history.
+## Update stream and microphone schema for new "disply_name"
+- Add column to database. 
+- Update API's to send display_name and not location to front end
 
-## v1.0 (In Progress)
-- Audio ingest API (`/ears`) with BirdNET analysis, species enrichment, and persisted detections.
-- External data integrations:
-  - GBIF taxonomy enrichment via `GbifTaxaClient`.
-  - Wikimedia summaries/media via `SpeciesEnricher`.
-  - NOAA daily forecast & observation normalization (`lib/noaa.py`).
-- Data persistence (SQLite) with species, days, recordings, and idents tables.
-- FastAPI read endpoints matching the documented contract:
-  - `GET /detections`
-  - `GET /species/{id}`
-  - `GET /days/{date}`
-- Config-driven third-party setup (includes per-provider headers/user-agent strings).
-- Ops tooling: `python -m app.jobs.noaa_update` for on-demand forecast/backfill refreshes.
-- Broadcast Notifications: Email + Telegram channels configurable via `config.yaml` (see `notifications_plan.md`).
-- Tests covering enrichment, NOAA normalization, and schema responses.
+## Timeline buckets can violate schema when timestamps are missing**  
+  - Docs: `backend/docs/api_reference.md` (timeline section) model `bucket_start`/`bucket_end` as strings.  
+  - Reality: `_group_detections_into_buckets` emits `None` for detections without timestamps (`backend/app/api.py:341-351`), but the Pydantic schema requires `str`, causing FastAPI validation errors if legacy rows lack `time`.
 
-## v1.1 (Observability & Scheduling)
-- Scheduled NOAA forecast/backfill job integrated with the deployment’s task runner (cron/Celery/etc.).
-- Metrics/exporter wiring (e.g., Prometheus counters derived from `*_request` logs) for GBIF/Wikimedia/NOAA success & latency tracking.
-- Optional alerting rules for external service degradation.
+## Front-end contract’s error handling guidance unimplemented**  
+  - Docs: `backend/docs/frontend_contract.md` recommends standardized `{ "error": { ... } }` payloads.  
+  - Reality: endpoints rely on FastAPI default exceptions with no wrapper, so the documented error shape is not honored.
+
+## New Frontend enpoint for time line
+- Groups detections of species into one entry 
+- Contains more information 
+    - Image
+    - Copy
+    - Link to more info
+
+## “Normalize id results to estimate count” feature never surfaced**  
+  - Docs: `backend/docs/features.md` lists an ID normalization/count estimation task, but there is no corresponding implementation in the ingestion or analytics codebase.
+
+## Medium – API responses omit documented fields**  
+  - Docs: `backend/docs/frontend_contract.md` expects `recording.duration_seconds` and enriched image metadata (`thumbnail_url`, `license`, `attribution`).  
+  - Reality: `_build_detection_item` never sets `duration_seconds` (`backend/app/api.py:284-311`), and `get_species_detail` returns a `SpeciesImage` with only `url`/`source_url` (`backend/app/api.py:1006-1044`), so the frontend cannot display the promised metadata.
+
+## Genus deduplication step described in docs is missing in code 
+  - Docs: `backend/docs/analyze_flow.md` (Section 4) and `backend/docs/features.md` (“detection cleanup… only the highest confidence is logged”) specify grouping detections by genus and persisting a single winner.  
+  - Reality: `persist_analysis_results` simply iterates over every detection and inserts them (`backend/app/lib/persistence.py:49-80`), so duplicates per genus/species are written verbatim.  
+  - Impact: violates the documented data contract and inflates `idents` records, which affects downstream alerts and analytics.
+
+## Medium – WAV cleanup for empty detections not implemented
+    **REVIEW: May be completed**
+  - Docs: `backend/docs/analyze_flow.md` (“Source WAV is deleted unless the capture policy forces retention”) and `backend/docs/features.md` (“discard files without matches”).  
+  - Reality: both the stream loop and the `/ears` upload retain every file regardless of detection outcome (`backend/app/main.py:88-115`, `backend/app/api.py:529-618`), leading to unbounded storage growth contrary to the plan.
+
+# BirdSong v1.x Roadmap
+
+Focus areas below capture the remaining work needed to round out the 1.x series now that the ingest and enrichment core is stable.
+
+## Alert & Notification Delivery
+- Finish wiring the NotificationService so email and Telegram sends execute end-to-end, including per-channel enable/disable flags and retries on transient failures.
+- Implement scheduled summary delivery (cron, APScheduler, or deployment-native tasks) that drains the alert buffer and respects `summary_schedule`.
+- Add alert history retention/pruning so summaries and real-time messages can be audited without ballooning storage.
+
+## Scheduling & Automation
+- Move the manual NOAA CLI (`python -m app.jobs.noaa_update`) into a recurring job with health checks and failure notifications.
+- Add automation hooks for alert flush tasks or other background routines that should run outside the ingest loop.
+
+## Observability & Reliability
+- Export structured metrics for external service calls (GBIF, Wikimedia, NOAA) and notification outcomes; surface via Prometheus or another collector.
+- Introduce circuit-breaker logic when third-party errors exceed thresholds, taping alerts + NOAA jobs until manual or timed reset.
+- Push debug and request logs into a centralized sink (ELK, Loki, etc.) to simplify production troubleshooting.
+
+## Data & Enrichment Enhancements
+- Add fallbacks for media enrichment (e.g., iNaturalist, Macaulay Library) when Wikimedia lacks usable assets, preserving license metadata.
+- Extend data citations to include NOAA issuance timestamps and observation station IDs for traceability.
+- Provide admin tooling to re-run enrichment for existing species when upstream data changes.
+
+## Front-End & User Experience
+- Deliver the detection feed UI: infinite scroll timeline, species cards with imagery, and recording playback links.
+- Implement date/time pickers and species filters aligned with the `/detections` query parameters.
+- Expose per-user alert preferences (e.g., favorite species) in preparation for account support.
+
+## Stretch Items Under Evaluation
+- Add SMS/Slack providers reusing the notification interface once email/Telegram production paths harden.
+- Build weekly trend analytics (unique species, detection volume) as additional API endpoints for dashboards.
+- Explore ambient-device integration (e.g., Home Assistant) powered by alert events.
 
 
-## Future Considerations
-- Front-end UI endpoints for additional analytics (weekly trends, species rarity scoring).
-- Real-time notification stack (Telegram/SMS) based on detection thresholds.
-- Circuit breaker support for repeated third-party failures with automatic re-enable.
-- Users database implementation
-    - primarily for user configured alerts
-- Enhance Alerts module for by user customization
+
+# BirdSong FUTURE Roadmap
+
+Notes for future development in no particular order
+
+## SMS Notifications
+  - Docs: `backend/docs/features.md` lists SMS alongside Telegram as supported channels.  
+  - Reality: only email and Telegram channel implementations exist (`backend/app/lib/notifications/channels`), so SMS alerts are unsupported.
+
+## Create USER concept
+- Create a users concept to allow for general site users and administrators
+- site users functions | launch timing
+    - subscribe to alerts | with users roll out
+    - social login [google*, apple, microsoft, ??]| future 
+- site administrators fuctions | launch timing
+    - manage input streams & microphones | with initial launch 
+    - manage users [password reset, block] | with initial launch
+    - manage alert channel settings | future
+    - manage alert rules | future
+    - maintain / update data sources | future
+ 
+
+## Move configuration to database 
+- For initial startup a config.yaml should be used to read all initial settings into the database. 
+- Create 
+
+## Implement Postgre and MAriaDB options for database back end
+
+- To allow for larger deployments create 
+
+## Add playback of detections 
+- Add interface for user to playback wav files with detections. 
+- play, pause, restart, download buttons
+- Visual display of waveform like iNaturalist with start and stop indicators for each detection 
+    - show detected species scientific name and common name with in the indicated section. 

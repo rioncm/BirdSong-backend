@@ -38,13 +38,18 @@ class RecordingPreview(BaseModel):
 class DetectionItem(BaseModel):
     id: int
     recorded_at: Optional[str] = None
+    device_id: Optional[str] = None
     device_name: Optional[str] = None
+    device_display_name: Optional[str] = None
     confidence: Optional[float] = None
     start_time: Optional[float] = None
     end_time: Optional[float] = None
     species: SpeciesPreview
     recording: RecordingPreview
     location_hint: Optional[str] = None
+    detection_count: Optional[int] = Field(
+        default=None, ge=1, description="Aggregated count of detections represented by this item"
+    )
 
 
 class TimelineBucket(BaseModel):

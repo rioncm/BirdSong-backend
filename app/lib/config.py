@@ -64,6 +64,7 @@ class StreamConfig:
     record_time: int
     output_folder: str
     location: str
+    display_name: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
 
@@ -93,6 +94,12 @@ class StreamConfig:
             raise ValueError(f"Stream '{stream_id_raw}' must set a positive 'record_time'")
 
         location = data.get("location") or stream_id_raw
+        display_name = (
+            data.get("display_name")
+            or data.get("location_name")
+            or data.get("location")
+            or stream_id_raw
+        )
         output_folder = data.get("output_folder") or stream_id_raw
 
         return cls(
@@ -102,6 +109,7 @@ class StreamConfig:
             record_time=record_time,
             output_folder=str(output_folder),
             location=str(location),
+            display_name=str(display_name) if display_name else None,
             latitude=to_optional_float(data.get("latitude")),
             longitude=to_optional_float(data.get("longitude")),
         )
@@ -113,6 +121,7 @@ class MicrophoneConfig:
     output_folder: str
     location: str
     api_key: str
+    display_name: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
 
@@ -143,11 +152,19 @@ class MicrophoneConfig:
                 f"Microphone '{microphone_id_raw}' configuration missing 'api_key'"
             )
 
+        display_name = (
+            data.get("display_name")
+            or data.get("location_name")
+            or data.get("location")
+            or microphone_id_raw
+        )
+
         return cls(
             microphone_id=str(microphone_id_raw),
             output_folder=data["output_folder"],
             location=data["location"],
             api_key=str(api_key),
+            display_name=str(display_name) if display_name else None,
             latitude=to_optional_float(data.get("latitude")),
             longitude=to_optional_float(data.get("longitude")),
         )

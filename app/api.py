@@ -149,11 +149,13 @@ def _floor_to_bucket(moment: datetime, bucket_minutes: int) -> datetime:
     return moment.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
-def _resolve_device_metadata(recording_path: Optional[str], device_index: List[Dict[str, Any]]) -> tuple[Optional[str], Optional[str]]:
-    if not recording_path:
-        return None, None
-    if not device_index:
-        return None, None
+def _resolve_device_metadata(
+    recording_path: Optional[str],
+    device_index: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not recording_path or not device_index:
+        return None
+
     raw_path = str(recording_path)
     path_obj = Path(raw_path)
     for entry in device_index:
@@ -163,12 +165,12 @@ def _resolve_device_metadata(recording_path: Optional[str], device_index: List[D
         entry_path_obj = Path(entry_path)
         try:
             path_obj.relative_to(entry_path_obj)
-            return entry.get("name") or entry.get("id"), entry.get("location")
+            return dict(entry)
         except ValueError:
             pass
         if raw_path.startswith(str(entry_path_obj)):
-            return entry.get("name") or entry.get("id"), entry.get("location")
-    return None, None
+            return dict(entry)
+    return None
 
 
 def _coerce_citation_content(raw: Any) -> Dict[str, Any]:
@@ -280,10 +282,29 @@ def _build_detection_item(
     species_id_value = row["species_id"]
     attrib = attribution_map.get(species_id_value, {})
 
-    device_name, location_hint = _resolve_device_metadata(
+    device_info = _resolve_device_metadata(
         row.get("recording_path"),
         list(device_index) if device_index else [],
     )
+
+    device_id = row.get("recording_source_id")
+    device_name = row.get("recording_source_name")
+    device_display_name = row.get("recording_source_display_name")
+    location_hint = row.get("recording_source_location")
+
+    if device_info:
+        device_id = device_id or device_info.get("id")
+        device_name = device_name or device_info.get("name") or device_info.get("id")
+        device_display_name = (
+            device_display_name
+            or device_info.get("display_name")
+            or device_name
+            or device_id
+        )
+        location_hint = location_hint or device_info.get("location")
+
+    device_display_name = device_display_name or device_name or device_id
+    device_name = device_name or device_id
 
     recording_preview = RecordingPreview(
         wav_id=row["wav_id"],
@@ -307,7 +328,9 @@ def _build_detection_item(
     detection_item = DetectionItem(
         id=row["id"],
         recorded_at=recorded_at_value,
+        device_id=device_id,
         device_name=device_name,
+        device_display_name=device_display_name,
         confidence=row["confidence"],
         start_time=row["start_time"],
         end_time=row["end_time"],
@@ -365,20 +388,62 @@ def _group_detections_into_buckets(
             }
             bucket_map[bucket_key] = bucket_entry
 
-        bucket_entry["detections"].append(detection)
+        bucket_entry["detections"].append((detection, detected_at))
         bucket_entry["species_ids"].add(detection.species.id)
         if detected_at is not None:
             bucket_entry["datetimes"].append(detected_at)
 
     buckets: List[Dict[str, Any]] = []
     for entry in bucket_map.values():
+        raw_detection_count = len(entry["detections"])
+        species_groups: Dict[str, Dict[str, Any]] = {}
+        for detection, detected_at in entry["detections"]:
+            key = detection.species.id
+            group = species_groups.get(key)
+            if group is None:
+                group = {
+                    "count": 0,
+                    "latest_dt": detected_at,
+                    "latest_detection": detection,
+                    "top_confidence": detection.confidence,
+                }
+                species_groups[key] = group
+
+            group["count"] += 1
+            if detected_at is not None:
+                if group["latest_dt"] is None or detected_at > group["latest_dt"]:
+                    group["latest_dt"] = detected_at
+                    group["latest_detection"] = detection
+            if detection.confidence is not None:
+                if group["top_confidence"] is None or detection.confidence > group["top_confidence"]:
+                    group["top_confidence"] = detection.confidence
+
+        aggregated_detections: List[DetectionItem] = []
+        for group in species_groups.values():
+            latest_detection: DetectionItem = group["latest_detection"]
+            updated_detection = latest_detection.model_copy(
+                update={
+                    "recorded_at": group["latest_dt"].isoformat() if group["latest_dt"] else latest_detection.recorded_at,
+                    "confidence": group["top_confidence"],
+                    "detection_count": group["count"],
+                }
+            )
+            aggregated_detections.append(updated_detection)
+
+        aggregated_detections.sort(
+            key=lambda item: datetime.fromisoformat(item.recorded_at)
+            if item.recorded_at
+            else datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+
         buckets.append(
             {
                 "bucket_start": entry["bucket_start"],
                 "bucket_end": entry["bucket_end"],
-                "detections": entry["detections"],
-                "total_detections": len(entry["detections"]),
-                "unique_species": len(entry["species_ids"]),
+                "detections": aggregated_detections,
+                "total_detections": raw_detection_count,
+                "unique_species": len(species_groups),
                 "datetimes": entry["datetimes"],
             }
         )
@@ -694,7 +759,8 @@ async def ingest_microphone_audio(
                 analysis,
                 analysis.detections,
                 source_id=microphone.microphone_id,
-                source_name=name or microphone.location or microphone.microphone_id,
+                source_name=name or microphone.display_name or microphone.location or microphone.microphone_id,
+                source_display_name=microphone.display_name or name or microphone.location,
                 source_location=microphone.location,
                 species_enricher=species_enricher,
                 species_id_map=species_id_map,
@@ -769,6 +835,10 @@ def list_detections(
                 species.c.info_url,
                 species.c.ai_summary,
                 recordings.c.path.label("recording_path"),
+                recordings.c.source_id.label("recording_source_id"),
+                recordings.c.source_name.label("recording_source_name"),
+                recordings.c.source_display_name.label("recording_source_display_name"),
+                recordings.c.source_location.label("recording_source_location"),
             )
             .join(species, idents.c.species_id == species.c.id)
             .join(recordings, idents.c.wav_id == recordings.c.wav_id, isouter=True)
@@ -908,6 +978,10 @@ def timeline_detections(
                 idents.c.end_time,
                 idents.c.wav_id,
                 recordings.c.path.label("recording_path"),
+                recordings.c.source_id.label("recording_source_id"),
+                recordings.c.source_name.label("recording_source_name"),
+                recordings.c.source_display_name.label("recording_source_display_name"),
+                recordings.c.source_location.label("recording_source_location"),
                 species.c.id.label("species_id"),
                 species.c.common_name.label("species_common_name"),
                 species.c.sci_name.label("species_scientific_name"),

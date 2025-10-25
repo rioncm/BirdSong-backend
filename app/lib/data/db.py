@@ -171,6 +171,18 @@ def _upgrade_0002_days_metadata(connection: Connection) -> None:
         connection.execute(text("ALTER TABLE days ADD COLUMN actual_source VARCHAR(128)"))
 
 
+def _upgrade_0003_recordings_source_metadata(connection: Connection) -> None:
+    if not _column_exists(connection, "recordings", "source_id"):
+        connection.execute(text("ALTER TABLE recordings ADD COLUMN source_id VARCHAR(128)"))
+    if not _column_exists(connection, "recordings", "source_name"):
+        connection.execute(text("ALTER TABLE recordings ADD COLUMN source_name VARCHAR(255)"))
+    if not _column_exists(connection, "recordings", "source_display_name"):
+        connection.execute(text("ALTER TABLE recordings ADD COLUMN source_display_name VARCHAR(255)"))
+    if not _column_exists(connection, "recordings", "source_location"):
+        connection.execute(text("ALTER TABLE recordings ADD COLUMN source_location VARCHAR(255)"))
+
+
 # Register migrations at import time.
 register_migration("0001_initial", _initial_schema)
 register_migration("0002_days_metadata", _upgrade_0002_days_metadata)
+register_migration("0003_recordings_source_metadata", _upgrade_0003_recordings_source_metadata)

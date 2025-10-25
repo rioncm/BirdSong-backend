@@ -341,6 +341,7 @@ def initialize_environment(
             or stream_details.get("location")
             or stream_name
         )
+        display_label = stream_details.get("display_name") or location_label
         stream_id = stream_details.get("stream_id") or stream_details.get("id") or stream_name
 
         if stream_base_path is not None:
@@ -356,6 +357,7 @@ def initialize_environment(
             "record_time": record_time,
             "output_folder": str(stream_output_path),
             "location": location_label,
+            "display_name": display_label,
         }
         stream_output_paths[stream_name] = stream_output_path
 
@@ -424,6 +426,7 @@ def initialize_environment(
             "output_folder": str(mic_output_path),
             "location": location_label,
             "api_key": api_key,
+            "display_name": mic_details.get("display_name") or location_label,
             "latitude": latitude,
             "longitude": longitude,
         }
@@ -437,6 +440,7 @@ def initialize_environment(
                 "type": "stream",
                 "id": config["stream_id"],
                 "name": name,
+                "display_name": config.get("display_name"),
                 "location": config["location"],
                 "path": str(output_path) if output_path is not None else None,
             }
@@ -448,6 +452,7 @@ def initialize_environment(
                 "type": "microphone",
                 "id": config["microphone_id"],
                 "name": name,
+                "display_name": config.get("display_name"),
                 "location": config["location"],
                 "path": str(output_path) if output_path is not None else None,
             }

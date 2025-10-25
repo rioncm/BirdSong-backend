@@ -121,23 +121,48 @@ def ensure_day(session: Session, target_date: date) -> int:
     return int(day_id)
 
 
-def ensure_recording(session: Session, wav_id: str, path: str) -> None:
+def ensure_recording(
+    session: Session,
+    wav_id: str,
+    path: str,
+    *,
+    source_id: Optional[str] = None,
+    source_name: Optional[str] = None,
+    source_display_name: Optional[str] = None,
+    source_location: Optional[str] = None,
+) -> None:
     existing = session.execute(
-        select(recordings.c.wav_id, recordings.c.path).where(recordings.c.wav_id == wav_id)
+        select(recordings).where(recordings.c.wav_id == wav_id)
     ).mappings().first()
+
+    payload = {
+        "path": path,
+        "source_id": source_id,
+        "source_name": source_name,
+        "source_display_name": source_display_name,
+        "source_location": source_location,
+    }
+    sanitized = {key: value for key, value in payload.items() if value is not None}
+
     if existing:
+        updates: Dict[str, Any] = {}
         if existing.get("path") != path:
+            updates["path"] = path
+        for key, value in sanitized.items():
+            if existing.get(key) != value:
+                updates[key] = value
+        if updates:
             session.execute(
                 update(recordings)
                 .where(recordings.c.wav_id == wav_id)
-                .values(path=path)
+                .values(**updates)
             )
         return
 
     session.execute(
         insert(recordings).values(
             wav_id=wav_id,
-            path=path,
+            **sanitized,
         )
     )
 
