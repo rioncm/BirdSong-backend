@@ -77,7 +77,7 @@ species = Table(
     Column("image_url", String(512)),
     Column("id_days", Integer, default=0),
     Column("info_url", String(512)),
-    Column("ai_summary", Text),
+    Column("summary", Text),
 )
 
 recordings = Table(

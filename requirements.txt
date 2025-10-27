@@ -14,4 +14,4 @@ pydantic
 httpx
 astral
 pytest
-
+beautifulsoup4

@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Optional
 
+import httpx
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from lib.clients import WikimediaClient, WikimediaClientError, WikimediaMedia, WikimediaSummary
+from lib.clients.ebird import EbirdClient, EbirdClientError, EbirdSpeciesData
 from lib.data import crud
 from lib.data.db import get_session
 from lib.source import GbifTaxaClient, GbifTaxon, ThirdPartySourceError
@@ -35,6 +38,7 @@ class SpeciesEnrichmentResult:
     gbif_taxon: Optional[GbifTaxon]
     wikimedia_summary: Optional[WikimediaSummary]
     wikimedia_media: Optional[WikimediaMedia]
+    ebird_data: Optional[EbirdSpeciesData]
 
 
 class SpeciesEnricher:
@@ -47,16 +51,32 @@ class SpeciesEnricher:
         *,
         gbif_client: Optional[GbifTaxaClient] = None,
         wikimedia_client: Optional[WikimediaClient] = None,
+        ebird_client: Optional[EbirdClient] = None,
+        images_dir: Optional[Path] = None,
     ) -> None:
         self._gbif_client = gbif_client or GbifTaxaClient()
         self._wikimedia_client = wikimedia_client or WikimediaClient()
+        self._ebird_client = ebird_client
+        self._images_dir = Path(images_dir) if images_dir else None
+        if self._images_dir is not None:
+            self._images_dir.mkdir(parents=True, exist_ok=True)
         self._species_cache: Dict[str, str] = {}
+        self._http_client = httpx.Client(timeout=10.0)
 
     def close(self) -> None:
         try:
             self._wikimedia_client.close()
         except Exception:  # noqa: BLE001 - best effort cleanup
             logger.debug("Failed to close Wikimedia client", exc_info=True)
+        if self._ebird_client is not None:
+            try:
+                self._ebird_client.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to close eBird client", exc_info=True)
+        try:
+            self._http_client.close()
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to close enrichment HTTP client", exc_info=True)
 
     def ensure_species(
         self,
@@ -83,6 +103,7 @@ class SpeciesEnricher:
                 gbif_taxon=None,
                 wikimedia_summary=None,
                 wikimedia_media=None,
+                ebird_data=None,
             )
 
         candidate_species_id = crud.generate_species_id(normalized)
@@ -97,12 +118,65 @@ class SpeciesEnricher:
             if existing is not None:
                 species_id = existing["id"]
                 self._remember_species(species_id, normalized, existing.get("sci_name"))
+
+                if self._species_requires_refresh(existing):
+                    session.rollback()
+                    taxon = self._lookup_taxon(scientific_name, common_name=common_name or existing.get("common_name"))
+                    taxonomy_name = (
+                        existing.get("sci_name")
+                        or (taxon.scientific_name if taxon and taxon.scientific_name else normalized)
+                    )
+                    summary = self._lookup_summary(taxon, taxonomy_name, common_name or existing.get("common_name"))
+                    media = self._lookup_media(taxon, taxonomy_name, common_name or existing.get("common_name"))
+                    ebird_data = self._lookup_ebird(
+                        taxonomy_name,
+                        common_name=common_name or existing.get("common_name"),
+                    )
+                    cached_image_url = self._cache_media_image(
+                        species_id,
+                        media,
+                        preferred_name=taxonomy_name,
+                    )
+                    if not cached_image_url:
+                        cached_image_url = existing.get("image_url")
+
+                    species_payload = _build_species_payload(
+                        species_id=species_id,
+                        scientific_name=taxonomy_name,
+                        common_name=common_name or existing.get("common_name"),
+                        taxon=taxon,
+                        wikimedia_summary=summary,
+                        wikimedia_media=media,
+                        ebird_data=ebird_data,
+                        cached_image_url=cached_image_url,
+                    )
+
+                    try:
+                        crud.upsert_species(session, species_payload)
+                        _record_citations(session, species_id, taxon, summary, media, ebird_data)
+                        session.commit()
+                    except SQLAlchemyError as exc:  # noqa: BLE001
+                        session.rollback()
+                        raise SpeciesEnrichmentError(
+                            f"Database error during species metadata refresh: {exc}"
+                        ) from exc
+
+                    return SpeciesEnrichmentResult(
+                        species_id=species_id,
+                        created=False,
+                        gbif_taxon=taxon,
+                        wikimedia_summary=summary,
+                        wikimedia_media=media,
+                        ebird_data=ebird_data,
+                    )
+
                 return SpeciesEnrichmentResult(
                     species_id=species_id,
                     created=False,
                     gbif_taxon=None,
                     wikimedia_summary=None,
                     wikimedia_media=None,
+                    ebird_data=None,
                 )
 
             taxon = self._lookup_taxon(scientific_name, common_name=common_name)
@@ -124,10 +198,20 @@ class SpeciesEnricher:
                     gbif_taxon=taxon,
                     wikimedia_summary=None,
                     wikimedia_media=None,
+                    ebird_data=None,
                 )
 
-            summary = self._lookup_summary(taxon, scientific_name, common_name)
-            media = self._lookup_media(taxon, scientific_name, common_name)
+            summary = self._lookup_summary(taxon, taxonomy_name, common_name)
+            media = self._lookup_media(taxon, taxonomy_name, common_name)
+            ebird_data = self._lookup_ebird(
+                taxonomy_name,
+                common_name=common_name or (taxon.common_name if taxon else None),
+            )
+            cached_image_url = self._cache_media_image(
+                species_id,
+                media,
+                preferred_name=taxonomy_name,
+            )
 
             species_payload = _build_species_payload(
                 species_id=species_id,
@@ -136,11 +220,13 @@ class SpeciesEnricher:
                 taxon=taxon,
                 wikimedia_summary=summary,
                 wikimedia_media=media,
+                ebird_data=ebird_data,
+                cached_image_url=cached_image_url,
             )
 
             try:
                 crud.upsert_species(session, species_payload)
-                _record_citations(session, species_id, taxon, summary, media)
+                _record_citations(session, species_id, taxon, summary, media, ebird_data)
                 session.commit()
             except SQLAlchemyError as exc:  # noqa: BLE001
                 session.rollback()
@@ -160,6 +246,7 @@ class SpeciesEnricher:
                 gbif_taxon=taxon,
                 wikimedia_summary=summary,
                 wikimedia_media=media,
+                ebird_data=ebird_data,
             )
 
     def _lookup_taxon(
@@ -253,6 +340,70 @@ class SpeciesEnricher:
                 return media
         return None
 
+    def _lookup_ebird(
+        self,
+        scientific_name: str,
+        *,
+        common_name: Optional[str],
+    ) -> Optional[EbirdSpeciesData]:
+        if self._ebird_client is None:
+            return None
+        try:
+            return self._ebird_client.lookup_species(
+                scientific_name,
+                common_name=common_name,
+            )
+        except (EbirdClientError, ValueError) as exc:
+            logger.info("eBird lookup failed for '%s': %s", scientific_name, exc)
+            return None
+
+    def _cache_media_image(
+        self,
+        species_id: str,
+        media: Optional[WikimediaMedia],
+        *,
+        preferred_name: Optional[str],
+    ) -> Optional[str]:
+        if self._images_dir is None or media is None:
+            return media.image_url if media else None
+
+        source_url = media.thumbnail_url or media.image_url
+        if not source_url:
+            return None
+
+        try:
+            parsed = httpx.URL(source_url)
+        except ValueError:
+            logger.info("Invalid media URL for species %s: %s", species_id, source_url)
+            return None
+
+        extension = Path(parsed.path).suffix or ".jpg"
+        name_part = preferred_name or media.title or species_id
+        safe_name = (
+            name_part.strip().lower().replace(" ", "-").replace("/", "-").replace("'", "")
+        )
+        filename = f"{species_id}-{safe_name}{extension}"
+        target_path = self._images_dir / filename
+
+        if not target_path.exists():
+            try:
+                response = self._http_client.get(source_url)
+                response.raise_for_status()
+            except httpx.HTTPError as exc:  # noqa: BLE001
+                logger.info("Failed to cache species image for %s: %s", species_id, exc)
+                return None
+            target_path.write_bytes(response.content)
+
+        return f"/images/{filename}"
+
+    @staticmethod
+    def _species_requires_refresh(existing: Dict[str, object]) -> bool:
+        for field in ("summary", "info_url", "image_url", "genus", "family", "species"):
+            value = existing.get(field)
+            if value in (None, ""):
+                return True
+        return False
+
 
 def _record_citations(
     session: Session,
@@ -260,6 +411,7 @@ def _record_citations(
     taxon: Optional[GbifTaxon],
     summary: Optional[WikimediaSummary],
     media: Optional[WikimediaMedia],
+    ebird_data: Optional[EbirdSpeciesData],
 ) -> None:
     gbif_source_id = crud.get_data_source_id(session, "Global Biodiversity Information Facility")
     if gbif_source_id and taxon:
@@ -304,6 +456,22 @@ def _record_citations(
                 content=json.dumps(media_payload, ensure_ascii=False),
             )
 
+    ebird_source_id = crud.get_data_source_id(session, "eBird")
+    if ebird_source_id and ebird_data:
+        ebird_payload = {
+            "species_code": ebird_data.species_code,
+            "info_url": ebird_data.info_url,
+            "summary": ebird_data.summary,
+            "raw": ebird_data.raw_taxonomy,
+        }
+        crud.upsert_data_citation(
+            session,
+            source_id=ebird_source_id,
+            species_id=species_id,
+            data_type="copy",
+            content=json.dumps(ebird_payload, ensure_ascii=False),
+        )
+
 
 def _build_species_payload(
     *,
@@ -313,6 +481,8 @@ def _build_species_payload(
     taxon: Optional[GbifTaxon],
     wikimedia_summary: Optional[WikimediaSummary],
     wikimedia_media: Optional[WikimediaMedia],
+    ebird_data: Optional[EbirdSpeciesData],
+    cached_image_url: Optional[str],
 ) -> dict:
     genus = None
     family = None
@@ -328,9 +498,17 @@ def _build_species_payload(
             genus = genus or parts[0]
             species_epithet = parts[-1]
 
-    image_url = wikimedia_media.image_url if wikimedia_media else None
-    info_url = wikimedia_summary.page_url if wikimedia_summary else None
-    summary_text = wikimedia_summary.extract if wikimedia_summary else None
+    image_url = cached_image_url or (wikimedia_media.image_url if wikimedia_media else None)
+    info_url = (
+        ebird_data.info_url
+        if ebird_data and ebird_data.info_url
+        else wikimedia_summary.page_url if wikimedia_summary else None
+    )
+    summary_text = (
+        ebird_data.summary
+        if ebird_data and ebird_data.summary
+        else wikimedia_summary.extract if wikimedia_summary else None
+    )
 
     fallback_common = (
         common_name
@@ -346,7 +524,7 @@ def _build_species_payload(
         "common_name": fallback_common or scientific_name,
         "image_url": image_url,
         "info_url": info_url,
-        "ai_summary": summary_text,
+        "summary": summary_text,
     }
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from typing import Any, Dict, Optional
 
 from sqlalchemy import and_, func, insert, select, update
@@ -209,6 +209,56 @@ def insert_detection(
         )
     )
     return True
+
+
+def update_species_detection_stats(
+    session: Session,
+    species_id: str,
+    detection_dt: datetime,
+) -> None:
+    species_row = get_species_by_id(session, species_id)
+    if not species_row:
+        return
+
+    timestamp = detection_dt
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    else:
+        timestamp = timestamp.astimezone(timezone.utc)
+
+    first_id = species_row.get("first_id")
+    last_id = species_row.get("last_id")
+    id_days = species_row.get("id_days") or 0
+
+    updates: Dict[str, Any] = {}
+
+    if first_id is None or timestamp < first_id:
+        updates["first_id"] = timestamp
+
+    increment_day = False
+    if last_id is None:
+        increment_day = True
+    else:
+        if timestamp > last_id:
+            updates["last_id"] = timestamp
+            last_date = last_id.date()
+            if timestamp.date() > last_date:
+                increment_day = True
+        else:
+            updates.setdefault("last_id", last_id)
+
+    if increment_day:
+        id_days = max(id_days, 0) + 1
+        updates["id_days"] = id_days
+    elif "last_id" in updates and "id_days" not in updates:
+        updates["id_days"] = id_days
+
+    if updates:
+        session.execute(
+            update(species)
+            .where(species.c.id == species_id)
+            .values(**updates)
+        )
 
 
 def get_day(session: Session, target_date: date) -> Optional[Dict[str, Any]]:

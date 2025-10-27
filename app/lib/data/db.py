@@ -182,7 +182,20 @@ def _upgrade_0003_recordings_source_metadata(connection: Connection) -> None:
         connection.execute(text("ALTER TABLE recordings ADD COLUMN source_location VARCHAR(255)"))
 
 
+def _upgrade_0004_species_summary(connection: Connection) -> None:
+    columns = set()
+    result = connection.execute(text('PRAGMA table_info("species")'))
+    for row in result:
+        columns.add(row._mapping["name"])
+
+    if "summary" not in columns and "ai_summary" in columns:
+        connection.execute(text("ALTER TABLE species RENAME COLUMN ai_summary TO summary"))
+    elif "summary" not in columns:
+        connection.execute(text("ALTER TABLE species ADD COLUMN summary TEXT"))
+
+
 # Register migrations at import time.
 register_migration("0001_initial", _initial_schema)
 register_migration("0002_days_metadata", _upgrade_0002_days_metadata)
 register_migration("0003_recordings_source_metadata", _upgrade_0003_recordings_source_metadata)
+register_migration("0004_species_summary", _upgrade_0004_species_summary)

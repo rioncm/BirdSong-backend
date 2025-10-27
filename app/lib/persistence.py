@@ -96,6 +96,7 @@ def persist_analysis_results(
                 end_time=detection.end_time,
             )
             if created:
+                crud.update_species_detection_stats(session, species_id, capture_dt)
                 inserted += 1
                 debug_logger.debug(
                     "persistence.detection_inserted",

@@ -136,7 +136,7 @@ def test_species_enricher_creates_species_and_reuses_cache(temp_database):
         assert species_row["sci_name"] == "Aphelocoma californica (Vigors, 1839)"
         assert species_row["common_name"] == "California Scrub-Jay"
         assert species_row["image_url"] == "https://example.org/media.jpg"
-        assert species_row["ai_summary"].startswith("The California Scrub-Jay")
+        assert species_row["summary"].startswith("The California Scrub-Jay")
 
         citation_rows = session.execute(
             select(data_citations.c.citation_id).where(

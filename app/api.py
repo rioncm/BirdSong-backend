@@ -29,6 +29,7 @@ from sqlalchemy import and_, func, or_, select
 import asyncio
 from lib.analyzer import BaseAnalyzer
 from lib.clients import WikimediaClient
+from lib.clients.ebird import EbirdClient
 from lib.alerts import AlertEngine, AlertEvent
 from lib.notifications import NotificationService
 from lib.notifications.scheduler import SummaryScheduler
@@ -321,7 +322,7 @@ def _build_detection_item(
         image_url=row["image_url"],
         image_attribution=attrib.get("attribution"),
         image_source_url=attrib.get("source_url"),
-        summary=row["ai_summary"],
+        summary=row["summary"],
         info_url=row["info_url"],
     )
 
@@ -421,7 +422,7 @@ def _group_detections_into_buckets(
         aggregated_detections: List[DetectionItem] = []
         for group in species_groups.values():
             latest_detection: DetectionItem = group["latest_detection"]
-            updated_detection = latest_detection.model_copy(
+            updated_detection = latest_detection.copy(
                 update={
                     "recorded_at": group["latest_dt"].isoformat() if group["latest_dt"] else latest_detection.recorded_at,
                     "confidence": group["top_confidence"],
@@ -479,13 +480,6 @@ async def startup_event() -> None:
     if isinstance(raw_user_agents, dict):
         user_agent_map = {str(key): value for key, value in raw_user_agents.items() if value}
 
-    wikimedia_headers = headers_map.get("Wikimedia Commons", {})
-    wikimedia_user_agent = user_agent_map.get("Wikimedia Commons") or wikimedia_headers.get("User-Agent")
-
-    species_enricher = SpeciesEnricher(
-        wikimedia_client=WikimediaClient(user_agent=wikimedia_user_agent)
-    )
-
     alerts_config = app_config.birdsong.alerts
 
     storage_paths: Dict[str, Path] = resources.get("storage_paths", {}) if isinstance(resources.get("storage_paths"), dict) else {}
@@ -493,6 +487,32 @@ async def startup_event() -> None:
     temp_path = Path(temp_path)
     temp_path.mkdir(parents=True, exist_ok=True)
     summary_storage_path = temp_path / "alerts_summary.json"
+
+    wikimedia_headers = headers_map.get("Wikimedia Commons", {})
+    wikimedia_user_agent = user_agent_map.get("Wikimedia Commons") or wikimedia_headers.get("User-Agent")
+
+    ebird_client: Optional[EbirdClient] = None
+    third_party_sources = resources.get("third_party_sources")
+    if isinstance(third_party_sources, list):
+        for entry in third_party_sources:
+            if isinstance(entry, dict) and entry.get("name") == "eBird":
+                api_key = entry.get("api_key")
+                if api_key:
+                    try:
+                        ebird_client = EbirdClient(
+                            api_key=api_key,
+                            user_agent=user_agent_map.get("eBird") or headers_map.get("eBird", {}).get("User-Agent"),
+                        )
+                    except ValueError as exc:
+                        logger.warning("Failed to initialize eBird client: %s", exc)
+                break
+
+    images_dir = storage_paths.get("images_path") or storage_paths.get("images")
+    species_enricher = SpeciesEnricher(
+        wikimedia_client=WikimediaClient(user_agent=wikimedia_user_agent),
+        ebird_client=ebird_client,
+        images_dir=images_dir,
+    )
 
     notifications_config = resources.get("notifications_config") or {}
     notification_service: Optional[NotificationService]
@@ -833,7 +853,7 @@ def list_detections(
                 species.c.family,
                 species.c.image_url,
                 species.c.info_url,
-                species.c.ai_summary,
+                species.c.summary,
                 recordings.c.path.label("recording_path"),
                 recordings.c.source_id.label("recording_source_id"),
                 recordings.c.source_name.label("recording_source_name"),
@@ -989,7 +1009,7 @@ def timeline_detections(
                 species.c.family,
                 species.c.image_url,
                 species.c.info_url,
-                species.c.ai_summary,
+                species.c.summary,
                 timestamp_expr.label("detected_ts"),
             )
             .join(species, idents.c.species_id == species.c.id)
@@ -1167,6 +1187,28 @@ def get_recording_file(wav_id: str) -> FileResponse:
     return FileResponse(file_path, media_type=media_type or "audio/wav")
 
 
+@app.get(
+    "/images/{image_name}",
+    summary="Serve cached species imagery.",
+)
+def get_species_image(request: Request, image_name: str) -> FileResponse:
+    _, resources, *_ = _ensure_state(request)
+    storage_paths = resources.get("storage_paths") if isinstance(resources, dict) else None
+    if not isinstance(storage_paths, dict):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+
+    images_dir = storage_paths.get("images_path") or storage_paths.get("images")
+    if not images_dir:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+
+    file_path = Path(images_dir) / image_name
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+
+    media_type, _ = mimetypes.guess_type(file_path.name)
+    return FileResponse(file_path, media_type=media_type or "image/jpeg")
+
+
 @app.get("/species/{species_id}", response_model=SpeciesDetailResponse)
 def get_species_detail(request: Request, species_id: str) -> SpeciesDetailResponse:
     _ensure_state(request)
@@ -1234,7 +1276,7 @@ def get_species_detail(request: Request, species_id: str) -> SpeciesDetailRespon
         common_name=species_row.get("common_name"),
         scientific_name=species_row.get("sci_name"),
         taxonomy=taxonomy,
-        summary=species_row.get("ai_summary"),
+        summary=species_row.get("summary"),
         image=SpeciesImage(
             url=species_row.get("image_url"),
             source_url=species_row.get("info_url"),
