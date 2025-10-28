@@ -216,18 +216,23 @@ def update_species_detection_stats(
     species_id: str,
     detection_dt: datetime,
 ) -> None:
+    def _as_utc_naive(value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+
     species_row = get_species_by_id(session, species_id)
     if not species_row:
         return
 
-    timestamp = detection_dt
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=timezone.utc)
-    else:
-        timestamp = timestamp.astimezone(timezone.utc)
+    timestamp = _as_utc_naive(detection_dt)
+    if timestamp is None:
+        return
 
-    first_id = species_row.get("first_id")
-    last_id = species_row.get("last_id")
+    first_id = _as_utc_naive(species_row.get("first_id"))
+    last_id = _as_utc_naive(species_row.get("last_id"))
     id_days = species_row.get("id_days") or 0
 
     updates: Dict[str, Any] = {}
