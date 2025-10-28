@@ -193,9 +193,14 @@ def _upgrade_0004_species_summary(connection: Connection) -> None:
     elif "summary" not in columns:
         connection.execute(text("ALTER TABLE species ADD COLUMN summary TEXT"))
 
+def _upgrade_0005_species_ebird_code(connection: Connection) -> None:
+    if not _column_exists(connection, "species", "ebird_code"):
+        connection.execute(text("ALTER TABLE species ADD COLUMN ebird_code VARCHAR(50)"))
+
 
 # Register migrations at import time.
 register_migration("0001_initial", _initial_schema)
 register_migration("0002_days_metadata", _upgrade_0002_days_metadata)
 register_migration("0003_recordings_source_metadata", _upgrade_0003_recordings_source_metadata)
 register_migration("0004_species_summary", _upgrade_0004_species_summary)
+register_migration("0005_species_ebird_code", _upgrade_0005_species_ebird_code)

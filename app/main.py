@@ -11,6 +11,7 @@ import os
 from lib.analyzer import BaseAnalyzer
 from lib.capture import AudioCapture
 from lib.clients import WikimediaClient
+from lib.clients.ebird import EbirdClient
 from lib.enrichment import SpeciesEnricher
 from lib.logging_utils import setup_debug_logging
 from lib.persistence import persist_analysis_results
@@ -47,7 +48,33 @@ def _build_species_enricher(resources: dict) -> SpeciesEnricher:
     wikimedia_user_agent = user_agent_map.get("Wikimedia Commons") or wikimedia_headers.get("User-Agent")
     wikimedia_client = WikimediaClient(user_agent=wikimedia_user_agent) if wikimedia_user_agent else None
 
-    return SpeciesEnricher(wikimedia_client=wikimedia_client)
+    ebird_client: Optional[EbirdClient] = None
+    for entry in resources.get("third_party_sources", []):
+        name = str(entry.get("name") or "").strip()
+        if name.lower() != "ebird":
+            continue
+        api_key = entry.get("api_key")
+        if not api_key:
+            DEBUG_LOGGER.warning("eBird data source configured without api_key; skipping client initialization")
+            break
+        ebird_user_agent = (
+            entry.get("user_agent")
+            or user_agent_map.get(name)
+            or headers_map.get(name, {}).get("User-Agent")
+        )
+        try:
+            ebird_client = EbirdClient(
+                api_key=api_key,
+                user_agent=ebird_user_agent,
+            )
+        except ValueError as exc:
+            DEBUG_LOGGER.warning("Failed to initialize eBird client: %s", exc)
+        break
+
+    return SpeciesEnricher(
+        wikimedia_client=wikimedia_client,
+        ebird_client=ebird_client,
+    )
 
 
 def load_configuration():

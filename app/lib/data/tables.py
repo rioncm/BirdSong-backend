@@ -68,6 +68,7 @@ species = Table(
     metadata,
     Column("id", String(64), primary_key=True),
     Column("sci_name", String(255), nullable=False, unique=True),
+    Column("ebird_code", String(50)), # eBird species code for direct linking
     Column("species", String(255)),
     Column("genus", String(255)),
     Column("family", String(255)),

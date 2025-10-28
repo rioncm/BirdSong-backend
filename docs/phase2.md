@@ -33,6 +33,7 @@ Table Model below for reference "*" indicates data missing from entries
 **image_url** -- See below
 **id_days** count of the days this species has been id'd only increments when last_id is being update and last_id before update is <= prior day midnight
 **info_url** -- see below
+**ebird_code** direct linking code from eBird taxonomy
 **summary** 
     1. column name changed from ai_summary to summary, needs migration
     2. scrape summary from eBird website from the identification section. **see below**
@@ -66,3 +67,5 @@ https://ebird.org/species/SPECIES_CODE
 
 
 # Completed
+- Added `backend/app/backfill_species_enrichment.py` to re-run enrichment for existing species rows. Invoke with `python backend/app/backfill_species_enrichment.py` (use `--dry-run` first) after updating code so legacy entries pick up genus/family/species, summaries, and image metadata.
+- Species enrichment now initializes the eBird client when an API key is provided and stores the returned `ebird_code` alongside each species for direct linking.

@@ -398,7 +398,15 @@ class SpeciesEnricher:
 
     @staticmethod
     def _species_requires_refresh(existing: Dict[str, object]) -> bool:
-        for field in ("summary", "info_url", "image_url", "genus", "family", "species"):
+        for field in (
+            "summary",
+            "info_url",
+            "image_url",
+            "genus",
+            "family",
+            "species",
+            "ebird_code",
+        ):
             value = existing.get(field)
             if value in (None, ""):
                 return True
@@ -514,6 +522,11 @@ def _build_species_payload(
         common_name
         or (taxon.common_name if taxon and taxon.common_name else None)
     )
+    ebird_code = (
+        ebird_data.species_code
+        if ebird_data and ebird_data.species_code
+        else None
+    )
 
     return {
         "id": species_id,
@@ -525,6 +538,7 @@ def _build_species_payload(
         "image_url": image_url,
         "info_url": info_url,
         "summary": summary_text,
+        "ebird_code": ebird_code,
     }
 
 
