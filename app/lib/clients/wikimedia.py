@@ -74,7 +74,8 @@ class WikimediaClient:
     def __init__(
         self,
         *,
-        base_url: str = "https://en.wikipedia.org/api/rest_v1",
+        summary_base_url: str = "https://en.wikipedia.org/api/rest_v1",
+        media_base_url: str = "https://commons.wikimedia.org/api/rest_v1",
         timeout: float = 5.0,
         user_agent: Optional[str] = None,
         transport: Optional[httpx.BaseTransport] = None,
@@ -88,8 +89,14 @@ class WikimediaClient:
             or os.getenv("WIKIMEDIA_USER_AGENT")
             or "BirdSong/0.1 (+https://github.com/rion/BirdSong)"
         )
-        self._client = httpx.Client(
-            base_url=base_url,
+        self._summary_client = httpx.Client(
+            base_url=summary_base_url,
+            timeout=timeout,
+            headers=_default_headers(resolved_user_agent),
+            transport=transport,
+        )
+        self._media_client = httpx.Client(
+            base_url=media_base_url,
             timeout=timeout,
             headers=_default_headers(resolved_user_agent),
             transport=transport,
@@ -100,7 +107,8 @@ class WikimediaClient:
         self._base_delay = base_delay
 
     def close(self) -> None:
-        self._client.close()
+        self._summary_client.close()
+        self._media_client.close()
 
     def summary(self, title: str) -> Optional[WikimediaSummary]:
         normalized = _normalize_title(title)
@@ -156,7 +164,7 @@ class WikimediaClient:
 
     def _fetch_summary(self, title: str) -> Dict[str, Any]:
         start = time.perf_counter()
-        response = self._client.get(f"/page/summary/{quote(title)}")
+        response = self._summary_client.get(f"/page/summary/{quote(title)}")
         duration = time.perf_counter() - start
         if response.status_code == 404:
             return {}
@@ -180,7 +188,7 @@ class WikimediaClient:
 
     def _fetch_media(self, title: str) -> Dict[str, Any]:
         start = time.perf_counter()
-        response = self._client.get(f"/page/media/{quote(title)}")
+        response = self._media_client.get(f"/page/media/{quote(title)}")
         duration = time.perf_counter() - start
         if response.status_code == 404:
             return {}
