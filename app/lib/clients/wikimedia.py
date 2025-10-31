@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from dataclasses import dataclass, field
+from html import unescape
+from typing import Any, Callable, Dict, Optional, Sequence
 from urllib.parse import quote
 
 import httpx
@@ -46,7 +48,8 @@ class WikimediaMedia:
     license_code: Optional[str]
     attribution: Optional[str]
     page_url: Optional[str]
-    raw: Dict[str, Any]
+    attribution_url: Optional[str] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
 
 
 def _default_headers(user_agent: str) -> Dict[str, str]:
@@ -75,14 +78,16 @@ class WikimediaClient:
         self,
         *,
         summary_base_url: str = "https://en.wikipedia.org/api/rest_v1",
-        media_base_url: str = "https://commons.wikimedia.org/api/rest_v1",
+        commons_base_url: str = "https://commons.wikimedia.org/w/rest.php/v1",
         timeout: float = 5.0,
         user_agent: Optional[str] = None,
         transport: Optional[httpx.BaseTransport] = None,
         summary_fetcher: Optional[Callable[[str], Dict[str, Any]]] = None,
-        media_fetcher: Optional[Callable[[str], Dict[str, Any]]] = None,
+        search_fetcher: Optional[Callable[[str, int], Sequence[Dict[str, Any]]]] = None,
+        file_fetcher: Optional[Callable[[str], Dict[str, Any]]] = None,
         attempts: int = 3,
         base_delay: float = 0.5,
+        search_limit: int = 5,
     ) -> None:
         resolved_user_agent = (
             user_agent
@@ -95,20 +100,22 @@ class WikimediaClient:
             headers=_default_headers(resolved_user_agent),
             transport=transport,
         )
-        self._media_client = httpx.Client(
-            base_url=media_base_url,
+        self._commons_client = httpx.Client(
+            base_url=commons_base_url,
             timeout=timeout,
             headers=_default_headers(resolved_user_agent),
             transport=transport,
         )
         self._summary_fetcher = summary_fetcher or self._fetch_summary
-        self._media_fetcher = media_fetcher or self._fetch_media
+        self._search_fetcher = search_fetcher or self._search_commons
+        self._file_fetcher = file_fetcher or self._fetch_file
         self._attempts = max(1, attempts)
         self._base_delay = base_delay
+        self._search_limit = max(1, search_limit)
 
     def close(self) -> None:
         self._summary_client.close()
-        self._media_client.close()
+        self._commons_client.close()
 
     def summary(self, title: str) -> Optional[WikimediaSummary]:
         normalized = _normalize_title(title)
@@ -138,20 +145,43 @@ class WikimediaClient:
 
     def media(self, title: str) -> Optional[WikimediaMedia]:
         normalized = _normalize_title(title)
+
         def _call() -> Optional[WikimediaMedia]:
             try:
-                payload = self._media_fetcher(normalized)
+                search_results = self._search_fetcher(normalized, self._search_limit)
             except WikimediaClientError:
                 raise
             except Exception as exc:  # noqa: BLE001
                 raise WikimediaClientError(
-                    f"Media lookup failed for '{normalized}': {exc}",
+                    f"Media search failed for '{normalized}': {exc}",
                     retryable=True,
                 ) from exc
 
-            if not payload:
+            if not search_results:
                 return None
-            return _parse_media(payload)
+
+            for entry in search_results:
+                if not isinstance(entry, dict):
+                    continue
+                file_key = entry.get("key")
+                if not isinstance(file_key, str) or not file_key:
+                    continue
+                normalized_key = file_key.replace(" ", "_")
+                try:
+                    file_payload = self._file_fetcher(normalized_key)
+                except WikimediaClientError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    raise WikimediaClientError(
+                        f"Media lookup failed for '{normalized_key}': {exc}",
+                        retryable=True,
+                    ) from exc
+                if not file_payload:
+                    continue
+                media = _parse_commons_media(file_payload, entry)
+                if media:
+                    return media
+            return None
 
         return with_retry(
             _call,
@@ -186,9 +216,43 @@ class WikimediaClient:
         )
         return response.json()
 
-    def _fetch_media(self, title: str) -> Dict[str, Any]:
+    def _search_commons(self, query: str, limit: int) -> Sequence[Dict[str, Any]]:
         start = time.perf_counter()
-        response = self._media_client.get(f"/page/media/{quote(title)}")
+        response = self._commons_client.get(
+            "/search/page",
+            params={"q": query, "limit": limit},
+        )
+        duration = time.perf_counter() - start
+        if response.status_code == 404:
+            return []
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise WikimediaClientError(
+                f"Wikimedia Commons search failed for '{query}': {exc.response.status_code}",
+                retryable=500 <= exc.response.status_code < 600 or exc.response.status_code == 429,
+            ) from exc
+        payload = response.json()
+        logger.info(
+            "Wikimedia request success",
+            extra={
+                "event": "wikimedia_request",
+                "operation": "commons_search",
+                "status": response.status_code,
+                "duration": duration,
+            },
+        )
+        pages = payload.get("pages")
+        if not isinstance(pages, list):
+            return []
+        return [dict(page) for page in pages if isinstance(page, dict)]
+
+    def _fetch_file(self, file_key: str) -> Dict[str, Any]:
+        normalized_key = file_key if file_key.startswith("File:") else f"File:{file_key}"
+        normalized_key = normalized_key.replace(" ", "_")
+        encoded_key = quote(normalized_key, safe="/:()'_")
+        start = time.perf_counter()
+        response = self._commons_client.get(f"/file/{encoded_key}")
         duration = time.perf_counter() - start
         if response.status_code == 404:
             return {}
@@ -196,14 +260,14 @@ class WikimediaClient:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             raise WikimediaClientError(
-                f"Wikimedia media request failed for '{title}': {exc.response.status_code}",
+                f"Wikimedia Commons file lookup failed for '{normalized_key}': {exc.response.status_code}",
                 retryable=500 <= exc.response.status_code < 600 or exc.response.status_code == 429,
             ) from exc
         logger.info(
             "Wikimedia request success",
             extra={
                 "event": "wikimedia_request",
-                "operation": "media",
+                "operation": "commons_file",
                 "status": response.status_code,
                 "duration": duration,
             },
@@ -233,74 +297,131 @@ def _parse_summary(payload: Dict[str, Any]) -> Optional[WikimediaSummary]:
     )
 
 
-def _parse_media(payload: Dict[str, Any]) -> Optional[WikimediaMedia]:
-    items = payload.get("items")
-    if not isinstance(items, list):
+def _strip_html(text: str) -> str:
+    cleaned = re.sub(r"<[^>]+>", "", text)
+    return unescape(cleaned).strip()
+
+
+def _extract_license(search_entry: Dict[str, Any], file_payload: Dict[str, Any]) -> Optional[str]:
+    license_info = file_payload.get("license")
+    if isinstance(license_info, dict):
+        for key in ("spdx", "short_name", "code", "name"):
+            value = license_info.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    excerpt = search_entry.get("excerpt")
+    if isinstance(excerpt, str) and excerpt:
+        text = _strip_html(excerpt)
+        markers = [
+            "Creative Commons",
+            "Public domain",
+            "CC ",
+            "GNU",
+        ]
+        for marker in markers:
+            idx = text.find(marker)
+            if idx != -1:
+                segment = text[idx:]
+                # stop at double 'true' or language marker if present
+                segment = segment.split("truetrue", 1)[0]
+                segment = segment.split("true", 1)[0]
+                return segment.strip()
+    return None
+
+
+def _parse_commons_media(
+    file_payload: Dict[str, Any],
+    search_entry: Optional[Dict[str, Any]] = None,
+) -> Optional[WikimediaMedia]:
+    preferred = file_payload.get("preferred") or {}
+    image_url = preferred.get("url")
+    if not isinstance(image_url, str) or not image_url:
+        original = file_payload.get("original") or {}
+        image_url = original.get("url")
+    if not isinstance(image_url, str) or not image_url:
         return None
 
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        if item.get("type") != "image":
-            continue
+    thumbnail = file_payload.get("thumbnail") or {}
+    thumbnail_url = thumbnail.get("url") if isinstance(thumbnail, dict) else None
 
-        original = item.get("original") or {}
-        image_url = original.get("source")
-        if not isinstance(image_url, str) or not image_url:
-            continue
+    title = file_payload.get("title")
+    if not isinstance(title, str):
+        if isinstance(search_entry, dict):
+            title = search_entry.get("title")
+            if not isinstance(title, str):
+                title = ""
+        else:
+            title = ""
 
-        thumbnail = item.get("thumbnail") or {}
-        thumbnail_url = thumbnail.get("source") if isinstance(thumbnail, dict) else None
+    page_url = file_payload.get("file_description_url")
+    if isinstance(page_url, str) and page_url.startswith("//"):
+        page_url = f"https:{page_url}"
+    elif not isinstance(page_url, str):
+        page_url = None
 
-        license_info = item.get("license") or {}
-        license_code = None
-        if isinstance(license_info, dict):
-            license_code = (
-                license_info.get("code")
-                or license_info.get("name")
-                or license_info.get("title")
-            )
+    attribution = None
+    attribution_url = None
+    latest = file_payload.get("latest")
+    if isinstance(latest, dict):
+        user = latest.get("user")
+        if isinstance(user, dict):
+            user_name = user.get("name")
+            if isinstance(user_name, str) and user_name.strip():
+                attribution = user_name.strip()
+                attribution_url = f"https://commons.wikimedia.org/wiki/User:{attribution.replace(' ', '_')}"
+            user_id = user.get("id")
+            if attribution_url is None and isinstance(user_id, int):
+                attribution_url = f"https://commons.wikimedia.org/wiki/User:{user_id}"
 
-        attribution = None
-        artist = item.get("artist")
-        if isinstance(artist, dict):
-            attribution = artist.get("name") or artist.get("string")
-        if not attribution:
-            attribution = item.get("credit")
+    license_code = _extract_license(search_entry or {}, file_payload)
 
-        page_url = item.get("file_page") or item.get("title")
+    raw_payload = {
+        "search": dict(search_entry) if isinstance(search_entry, dict) else None,
+        "file": dict(file_payload),
+    }
 
-        return WikimediaMedia(
-            title=str(item.get("title", "")),
-            image_url=image_url,
-            thumbnail_url=thumbnail_url,
-            license_code=license_code,
-            attribution=attribution,
-            page_url=page_url if isinstance(page_url, str) else None,
-            raw=dict(payload),
-        )
-    return None
+    return WikimediaMedia(
+        title=title,
+        image_url=image_url,
+        thumbnail_url=thumbnail_url,
+        license_code=license_code,
+        attribution=attribution,
+        page_url=page_url,
+        attribution_url=attribution_url,
+        raw=raw_payload,
+    )
 
 
 def build_wikimedia_stub(
     *,
     summaries: Optional[Dict[str, Dict[str, Any]]] = None,
-    media: Optional[Dict[str, Dict[str, Any]]] = None,
-) -> Dict[str, Callable[[str], Dict[str, Any]]]:
+    searches: Optional[Dict[str, Sequence[Dict[str, Any]]]] = None,
+    files: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Callable]:
     """
     Build stub fetchers for WikimediaClient.
 
-    Returns a dict with 'summary' and 'media' callables compatible with the
-    summary_fetcher/media_fetcher constructor arguments.
+    Returns a dict with 'summary', 'search', and 'file' callables compatible with the
+    summary_fetcher/search_fetcher/file_fetcher constructor arguments.
     """
 
     summary_map = {key.lower(): dict(value) for key, value in (summaries or {}).items()}
-    media_map = {key.lower(): dict(value) for key, value in (media or {}).items()}
+    search_map = {
+        key.lower(): [dict(item) for item in value]
+        for key, value in (searches or {}).items()
+        if isinstance(value, Sequence)
+    }
+    file_map = {key.replace(" ", "_"): dict(value) for key, value in (files or {}).items()}
 
     def summary_fetcher(title: str) -> Dict[str, Any]:
         return summary_map.get(title.strip().lower(), {})
 
-    def media_fetcher(title: str) -> Dict[str, Any]:
-        return media_map.get(title.strip().lower(), {})
+    def search_fetcher(query: str, limit: int) -> Sequence[Dict[str, Any]]:
+        entries = search_map.get(query.strip().lower(), [])
+        return entries[:limit]
 
-    return {"summary": summary_fetcher, "media": media_fetcher}
+    def file_fetcher(key: str) -> Dict[str, Any]:
+        normalized = key.replace(" ", "_")
+        return dict(file_map.get(normalized) or file_map.get(key) or {})
+
+    return {"summary": summary_fetcher, "search": search_fetcher, "file": file_fetcher}

@@ -43,18 +43,23 @@ SUMMARY_PAYLOAD: Dict[str, object] = {
     "thumbnail": {"source": "https://example.org/summary-thumb.jpg"},
 }
 
-MEDIA_PAYLOAD: Dict[str, object] = {
-    "items": [
-        {
-            "type": "image",
-            "title": "File:California_Scrub_Jay.jpg",
-            "original": {"source": "https://example.org/media.jpg"},
-            "thumbnail": {"source": "https://example.org/media-thumb.jpg"},
-            "license": {"code": "CC BY-SA 4.0"},
-            "artist": {"name": "Jane Doe"},
-            "file_page": "https://commons.wikimedia.org/wiki/File:California_Scrub_Jay.jpg",
-        }
-    ]
+COMMONS_SEARCH_RESULTS = [
+    {
+        "id": 147433618,
+        "key": "File:California_Scrub_Jay.jpg",
+        "title": "File:California Scrub Jay.jpg",
+        "excerpt": "Creative Commons Attribution-Share Alike 4.0",
+    }
+]
+
+COMMONS_FILE_PAYLOAD: Dict[str, object] = {
+    "title": "California Scrub Jay.jpg",
+    "file_description_url": "//commons.wikimedia.org/wiki/File:California_Scrub_Jay.jpg",
+    "preferred": {"url": "https://example.org/media.jpg"},
+    "thumbnail": {"url": "https://example.org/media-thumb.jpg"},
+    "original": {"url": "https://example.org/media-original.jpg"},
+    "latest": {"user": {"id": 1966889, "name": "Jane Doe"}},
+    "license": {"short_name": "CC BY-SA 4.0"},
 }
 
 
@@ -96,7 +101,7 @@ def temp_database(tmp_path_factory):
 
 
 def test_species_enricher_creates_species_and_reuses_cache(temp_database):
-    counters = {"gbif": 0, "summary": 0, "media": 0}
+    counters = {"gbif": 0, "summary": 0, "search": 0, "file": 0}
 
     def gbif_fetch(name: str, params: Dict[str, object]) -> Dict[str, object]:
         counters["gbif"] += 1
@@ -106,14 +111,19 @@ def test_species_enricher_creates_species_and_reuses_cache(temp_database):
         counters["summary"] += 1
         return dict(SUMMARY_PAYLOAD)
 
-    def media_fetch(title: str) -> Dict[str, object]:
-        counters["media"] += 1
-        return dict(MEDIA_PAYLOAD)
+    def search_fetch(title: str, limit: int):
+        counters["search"] += 1
+        return list(COMMONS_SEARCH_RESULTS)
+
+    def file_fetch(key: str) -> Dict[str, object]:
+        counters["file"] += 1
+        return dict(COMMONS_FILE_PAYLOAD)
 
     gbif_client = GbifTaxaClient(fetch_func=gbif_fetch)
     wikimedia_client = WikimediaClient(
         summary_fetcher=summary_fetch,
-        media_fetcher=media_fetch,
+        search_fetcher=search_fetch,
+        file_fetcher=file_fetch,
     )
 
     enricher = SpeciesEnricher(
@@ -127,7 +137,7 @@ def test_species_enricher_creates_species_and_reuses_cache(temp_database):
     )
 
     assert result.created is True
-    assert counters == {"gbif": 1, "summary": 1, "media": 1}
+    assert counters == {"gbif": 1, "summary": 1, "search": 1, "file": 1}
 
     session = get_session()
     try:
@@ -154,7 +164,7 @@ def test_species_enricher_creates_species_and_reuses_cache(temp_database):
 
     assert repeat.created is False
     assert repeat.species_id == result.species_id
-    assert counters == {"gbif": 1, "summary": 1, "media": 1}
+    assert counters == {"gbif": 1, "summary": 1, "search": 1, "file": 1}
 
     session = get_session()
     try:
@@ -171,7 +181,7 @@ def test_species_enricher_creates_species_and_reuses_cache(temp_database):
 
 
 def test_species_enricher_uses_existing_records_without_re_enrichment(temp_database):
-    counters = {"gbif": 0, "summary": 0, "media": 0}
+    counters = {"gbif": 0, "summary": 0, "search": 0, "file": 0}
 
     def gbif_fetch(name: str, params: Dict[str, object]) -> Dict[str, object]:
         counters["gbif"] += 1
@@ -181,14 +191,19 @@ def test_species_enricher_uses_existing_records_without_re_enrichment(temp_datab
         counters["summary"] += 1
         return dict(SUMMARY_PAYLOAD)
 
-    def media_fetch(title: str) -> Dict[str, object]:
-        counters["media"] += 1
-        return dict(MEDIA_PAYLOAD)
+    def search_fetch(title: str, limit: int):
+        counters["search"] += 1
+        return list(COMMONS_SEARCH_RESULTS)
+
+    def file_fetch(key: str) -> Dict[str, object]:
+        counters["file"] += 1
+        return dict(COMMONS_FILE_PAYLOAD)
 
     gbif_client = GbifTaxaClient(fetch_func=gbif_fetch)
     wikimedia_client = WikimediaClient(
         summary_fetcher=summary_fetch,
-        media_fetcher=media_fetch,
+        search_fetcher=search_fetch,
+        file_fetcher=file_fetch,
     )
 
     enricher = SpeciesEnricher(
@@ -203,7 +218,8 @@ def test_species_enricher_uses_existing_records_without_re_enrichment(temp_datab
 
     assert result.created is False
     assert counters["gbif"] == 1  # taxonomy fetched once to confirm existing record
-    assert counters["summary"] == 0  # media endpoints skipped because species already exists
-    assert counters["media"] == 0
+    assert counters["summary"] == 0  # enrichment skipped for existing record
+    assert counters["search"] == 0
+    assert counters["file"] == 0
 
     enricher.close()

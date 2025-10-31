@@ -69,3 +69,4 @@ https://ebird.org/species/SPECIES_CODE
 # Completed
 - Added `backend/app/backfill_species_enrichment.py` to re-run enrichment for existing species rows. Invoke with `python backend/app/backfill_species_enrichment.py` (use `--dry-run` first) after updating code so legacy entries pick up genus/family/species, summaries, and image metadata.
 - Species enrichment now initializes the eBird client when an API key is provided and stores the returned `ebird_code` alongside each species for direct linking.
+- Wikimedia enrichment now uses the Commons REST `/search/page` + `/file/{key}` workflow and caches the `preferred.url` rendition with proper attribution details.

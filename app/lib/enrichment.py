@@ -367,7 +367,7 @@ class SpeciesEnricher:
         if self._images_dir is None or media is None:
             return media.image_url if media else None
 
-        source_url = media.thumbnail_url or media.image_url
+        source_url = media.image_url or media.thumbnail_url
         if not source_url:
             return None
 
@@ -454,6 +454,7 @@ def _record_citations(
                 "thumbnail_url": media.thumbnail_url,
                 "license": media.license_code,
                 "attribution": media.attribution,
+                "attribution_url": media.attribution_url,
                 "page_url": media.page_url,
             }
             crud.upsert_data_citation(
