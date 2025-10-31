@@ -2,38 +2,46 @@
 Priority work to be completed for a 1.1 release. These items were identified in a prior code review. Completion status should be verified before starting. Documentation references for backend/docs is no longer valid. Older documents have been moved to backend/docs/archive.
 
 ## Update stream and microphone schema for new "disply_name"
-- Add column to database. 
-- Update API's to send display_name and not location to front end
+**Status: Completed (v1.1)**
+- Detection payloads now rely on `device_display_name`; legacy `location` hints are no longer sent to clients.
+- Database schema already carried the supporting columns via prior migrations.
 
-## Timeline buckets can violate schema when timestamps are missing**  
-  - Docs: `backend/docs/api_reference.md` (timeline section) model `bucket_start`/`bucket_end` as strings.  
-  - Reality: `_group_detections_into_buckets` emits `None` for detections without timestamps (`backend/app/api.py:341-351`), but the Pydantic schema requires `str`, causing FastAPI validation errors if legacy rows lack `time`.
+## Timeline buckets can violate schema when timestamps are missing  
+**Status: Completed (v1.1)**
+  - Buckets generated without timestamps now emit the string literal `"unspecified"` so the response model always receives `str` values as documented.
+  - Cursor math still relies on actual timestamps, so legacy rows without `time` remain accessible without validation errors.
 
-## Front-end contract’s error handling guidance unimplemented**  
-  - Docs: `backend/docs/frontend_contract.md` recommends standardized `{ "error": { ... } }` payloads.  
-  - Reality: endpoints rely on FastAPI default exceptions with no wrapper, so the documented error shape is not honored.
+## Front-end contract’s error handling guidance unimplemented 
+**Status: Completed (v1.1)** 
+  - Responses now wrap all FastAPI/validation errors in `{ "error": { "code", "message", "details?" } }`.
+  - Common HTTP status codes map to canonical error codes (`bad_request`, `not_found`, `validation_error`, etc.); detail payloads bubble up under `error.details`.
 
-## New Frontend enpoint for time line
+## New Frontend enpoint for time line 
+***COMPLETED***
 - Groups detections of species into one entry 
 - Contains more information 
     - Image
     - Copy
     - Link to more info
 
-## “Normalize id results to estimate count” feature never surfaced**  
+## “Normalize id results to estimate count” feature never surfaced** 
+**REVEIW Implement if missing** 
   - Docs: `backend/docs/features.md` lists an ID normalization/count estimation task, but there is no corresponding implementation in the ingestion or analytics codebase.
 
-## Medium – API responses omit documented fields**  
-  - Docs: `backend/docs/frontend_contract.md` expects `recording.duration_seconds` and enriched image metadata (`thumbnail_url`, `license`, `attribution`).  
-  - Reality: `_build_detection_item` never sets `duration_seconds` (`backend/app/api.py:284-311`), and `get_species_detail` returns a `SpeciesImage` with only `url`/`source_url` (`backend/app/api.py:1006-1044`), so the frontend cannot display the promised metadata.
+## Medium – API responses omit documented fields
+**Status: Completed (v1.1)**
+ - Detection payloads now surface `recording.duration_seconds` sourced from the analyzer pipeline.
+ - Species previews/detail endpoints expose cached media metadata (`thumbnail_url`, `license`, `attribution`, `source_url`) pulled from citation records.
+ 
 
 ## Genus deduplication step described in docs is missing in code 
+**HOLD and document current behavior**
   - Docs: `backend/docs/analyze_flow.md` (Section 4) and `backend/docs/features.md` (“detection cleanup… only the highest confidence is logged”) specify grouping detections by genus and persisting a single winner.  
   - Reality: `persist_analysis_results` simply iterates over every detection and inserts them (`backend/app/lib/persistence.py:49-80`), so duplicates per genus/species are written verbatim.  
   - Impact: violates the documented data contract and inflates `idents` records, which affects downstream alerts and analytics.
 
 ## Medium – WAV cleanup for empty detections not implemented
-    **REVIEW: May be completed**
+**REVEIW Implement if missing** 
   - Docs: `backend/docs/analyze_flow.md` (“Source WAV is deleted unless the capture policy forces retention”) and `backend/docs/features.md` (“discard files without matches”).  
   - Reality: both the stream loop and the `/ears` upload retain every file regardless of detection outcome (`backend/app/main.py:88-115`, `backend/app/api.py:529-618`), leading to unbounded storage growth contrary to the plan.
 

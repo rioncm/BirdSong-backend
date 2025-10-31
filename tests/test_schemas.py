@@ -39,12 +39,15 @@ def test_detection_feed_schema_roundtrip() -> None:
                     id="apca",
                     common_name="California Scrub-Jay",
                     scientific_name="Aphelocoma californica",
+                    image_thumbnail_url="https://example.org/thumb.jpg",
+                    image_license="CC BY-SA 4.0",
+                    image_attribution="© Example",
                 ),
                 recording=RecordingPreview(
                     wav_id="123",
                     path="/tmp/audio.wav",
+                    duration_seconds=32.5,
                 ),
-                location_hint="predicted",
             )
         ],
     )
@@ -52,6 +55,8 @@ def test_detection_feed_schema_roundtrip() -> None:
     payload = response.model_dump()
     assert payload["summary"]["total_detections"] == 3
     assert payload["detections"][0]["species"]["id"] == "apca"
+    assert payload["detections"][0]["recording"]["duration_seconds"] == 32.5
+    assert payload["detections"][0]["species"]["image_thumbnail_url"] == "https://example.org/thumb.jpg"
 
 
 def test_species_detail_schema_supports_alias() -> None:

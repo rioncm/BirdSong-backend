@@ -126,6 +126,7 @@ def ensure_recording(
     wav_id: str,
     path: str,
     *,
+    duration_seconds: Optional[float] = None,
     source_id: Optional[str] = None,
     source_name: Optional[str] = None,
     source_display_name: Optional[str] = None,
@@ -137,6 +138,7 @@ def ensure_recording(
 
     payload = {
         "path": path,
+        "duration_seconds": duration_seconds,
         "source_id": source_id,
         "source_name": source_name,
         "source_display_name": source_display_name,

@@ -50,6 +50,7 @@ def persist_analysis_results(
             session,
             wav_id,
             str(wav_path),
+            duration_seconds=analysis.duration_seconds,
             source_id=source_id or analysis.stream_id,
             source_name=source_name,
             source_display_name=source_display_name or source_name or source_id,

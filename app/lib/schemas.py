@@ -22,6 +22,8 @@ class SpeciesPreview(BaseModel):
     genus: Optional[str] = None
     family: Optional[str] = None
     image_url: Optional[str] = None
+    image_thumbnail_url: Optional[str] = None
+    image_license: Optional[str] = None
     image_attribution: Optional[str] = None
     image_source_url: Optional[str] = None
     summary: Optional[str] = None
@@ -46,7 +48,6 @@ class DetectionItem(BaseModel):
     end_time: Optional[float] = None
     species: SpeciesPreview
     recording: RecordingPreview
-    location_hint: Optional[str] = None
     detection_count: Optional[int] = Field(
         default=None, ge=1, description="Aggregated count of detections represented by this item"
     )

@@ -6,6 +6,7 @@ import mimetypes
 import logging
 from collections import OrderedDict
 from datetime import date as date_cls, datetime, time as time_cls, timezone, timedelta
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -22,7 +23,8 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.routing import NoMatchFound
 from sqlalchemy import and_, func, or_, select
 
@@ -87,6 +89,17 @@ app.add_middleware(
 logger = logging.getLogger("birdsong.api")
 
 
+_ERROR_CODE_MAP = {
+    status.HTTP_400_BAD_REQUEST: "bad_request",
+    status.HTTP_401_UNAUTHORIZED: "unauthorized",
+    status.HTTP_403_FORBIDDEN: "forbidden",
+    status.HTTP_404_NOT_FOUND: "not_found",
+    status.HTTP_409_CONFLICT: "conflict",
+    status.HTTP_422_UNPROCESSABLE_ENTITY: "validation_error",
+    status.HTTP_500_INTERNAL_SERVER_ERROR: "server_error",
+}
+
+
 def _parse_optional_float(value: Optional[str], field: str) -> Optional[float]:
     if value is None or value == "":
         return None
@@ -138,6 +151,63 @@ def _parse_iso_timestamp(value: str, field: str) -> datetime:
     else:
         parsed = parsed.astimezone(timezone.utc)
     return parsed
+
+
+def _status_to_error_code(status_code: int) -> str:
+    return _ERROR_CODE_MAP.get(status_code, f"http_{status_code}")
+
+
+def _build_error_payload(status_code: int, detail: Any) -> Dict[str, Any]:
+    code = _status_to_error_code(status_code)
+    message: Optional[str] = None
+    extra: Optional[Any] = None
+
+    if isinstance(detail, dict):
+        code = str(detail.get("code") or code)
+        message = detail.get("message") or detail.get("detail")
+        remaining = {k: v for k, v in detail.items() if k not in {"code", "message", "detail"}}
+        if remaining:
+            extra = remaining
+    elif isinstance(detail, list):
+        extra = detail
+    elif detail:
+        message = str(detail)
+
+    if message is None:
+        try:
+            message = HTTPStatus(status_code).phrase
+        except ValueError:
+            message = "Request failed"
+
+    payload: Dict[str, Any] = {
+        "error": {
+            "code": code,
+            "message": message,
+        }
+    }
+    if extra is not None:
+        payload["error"]["details"] = extra
+    return payload
+
+
+@app.exception_handler(HTTPException)
+async def _http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    payload = _build_error_payload(exc.status_code, exc.detail)
+    return JSONResponse(status_code=exc.status_code, content=payload)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exception_handler(
+    request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    detail = {
+        "code": "validation_error",
+        "message": "Request validation failed",
+        "fields": exc.errors(),
+    }
+    payload = _build_error_payload(status.HTTP_422_UNPROCESSABLE_ENTITY, detail)
+    return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content=payload)
 
 
 def _floor_to_bucket(moment: datetime, bucket_minutes: int) -> datetime:
@@ -216,7 +286,10 @@ def _load_image_attributions(session, species_ids: List[str]) -> Dict[str, Dict[
         payload = _coerce_citation_content(row["content"])
         results[species_id_value] = {
             "attribution": payload.get("credit") or payload.get("attribution"),
-            "source_url": payload.get("source_url") or payload.get("url"),
+            "source_url": payload.get("source_url") or payload.get("page_url") or payload.get("url"),
+            "thumbnail_url": payload.get("thumbnail_url"),
+            "license": payload.get("license") or payload.get("license_code"),
+            "image_url": payload.get("image_url") or payload.get("url"),
         }
     return results
 
@@ -291,7 +364,6 @@ def _build_detection_item(
     device_id = row.get("recording_source_id")
     device_name = row.get("recording_source_name")
     device_display_name = row.get("recording_source_display_name")
-    location_hint = row.get("recording_source_location")
 
     if device_info:
         device_id = device_id or device_info.get("id")
@@ -302,7 +374,6 @@ def _build_detection_item(
             or device_name
             or device_id
         )
-        location_hint = location_hint or device_info.get("location")
 
     device_display_name = device_display_name or device_name or device_id
     device_name = device_name or device_id
@@ -311,6 +382,7 @@ def _build_detection_item(
         wav_id=row["wav_id"],
         path=row["recording_path"],
         url=_build_recording_url(request, row["wav_id"]),
+        duration_seconds=row.get("recording_duration_seconds"),
     )
 
     species_preview = SpeciesPreview(
@@ -319,7 +391,9 @@ def _build_detection_item(
         scientific_name=row["species_scientific_name"] or row["ident_scientific_name"],
         genus=row["genus"],
         family=row["family"],
-        image_url=row["image_url"],
+        image_url=attrib.get("image_url") or row["image_url"],
+        image_thumbnail_url=attrib.get("thumbnail_url"),
+        image_license=attrib.get("license"),
         image_attribution=attrib.get("attribution"),
         image_source_url=attrib.get("source_url"),
         summary=row["summary"],
@@ -337,7 +411,6 @@ def _build_detection_item(
         end_time=row["end_time"],
         species=species_preview,
         recording=recording_preview,
-        location_hint=location_hint,
     )
     return detection_item, recorded_at_dt
 
@@ -369,8 +442,8 @@ def _group_detections_into_buckets(
     for detected_at, detection in items_with_time:
         if detected_at is None:
             bucket_key = "unspecified"
-            bucket_start_iso = None
-            bucket_end_iso = None
+            bucket_start_iso = "unspecified"
+            bucket_end_iso = "unspecified"
         else:
             bucket_start = _floor_to_bucket(detected_at, bucket_minutes)
             bucket_end = bucket_start + timedelta(minutes=bucket_minutes)
@@ -998,6 +1071,7 @@ def timeline_detections(
                 idents.c.end_time,
                 idents.c.wav_id,
                 recordings.c.path.label("recording_path"),
+                recordings.c.duration_seconds.label("recording_duration_seconds"),
                 recordings.c.source_id.label("recording_source_id"),
                 recordings.c.source_name.label("recording_source_name"),
                 recordings.c.source_display_name.label("recording_source_display_name"),
@@ -1213,6 +1287,7 @@ def get_species_image(request: Request, image_name: str) -> FileResponse:
 def get_species_detail(request: Request, species_id: str) -> SpeciesDetailResponse:
     _ensure_state(request)
     session = get_session()
+    image_details_map: Dict[str, Dict[str, Optional[str]]] = {}
     try:
         species_row = session.execute(
             select(species).where(species.c.id == species_id)
@@ -1238,12 +1313,18 @@ def get_species_detail(request: Request, species_id: str) -> SpeciesDetailRespon
                 func.count(idents.c.id).label("total"),
             ).where(idents.c.species_id == species_id)
         ).mappings().first()
+
+        image_details_map = _load_image_attributions(session, [species_id])
     finally:
         session.close()
 
     first_seen = detection_stats["first_date"].isoformat() if detection_stats and detection_stats["first_date"] else None
     last_seen = detection_stats["last_date"].isoformat() if detection_stats and detection_stats["last_date"] else None
     total_count = int(detection_stats["total"]) if detection_stats else 0
+
+    image_details = image_details_map.get(species_id, {}) if image_details_map else {}
+    image_url = image_details.get("image_url") or species_row.get("image_url")
+    image_source_url = image_details.get("source_url") or species_row.get("info_url")
 
     parsed_citations: List[Dict[str, Any]] = []
     for citation in citations:
@@ -1278,8 +1359,11 @@ def get_species_detail(request: Request, species_id: str) -> SpeciesDetailRespon
         taxonomy=taxonomy,
         summary=species_row.get("summary"),
         image=SpeciesImage(
-            url=species_row.get("image_url"),
-            source_url=species_row.get("info_url"),
+            url=image_url,
+            thumbnail_url=image_details.get("thumbnail_url"),
+            license=image_details.get("license"),
+            attribution=image_details.get("attribution"),
+            source_url=image_source_url,
         ),
         detections=SpeciesDetections(
             first_seen=first_seen,
