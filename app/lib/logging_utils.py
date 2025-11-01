@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 
@@ -15,7 +16,13 @@ def setup_debug_logging(base_dir: Path, *, level: int = logging.DEBUG) -> loggin
 
     logger = logging.getLogger("birdsong.debug")
     if not logger.handlers:
-        handler = logging.FileHandler(log_path, encoding="utf-8")
+        handler = TimedRotatingFileHandler(
+            filename=str(log_path),
+            when="midnight",
+            backupCount=7,
+            encoding="utf-8",
+            utc=True,
+        )
         formatter = logging.Formatter(
             "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
             datefmt="%Y-%m-%dT%H:%M:%S%z",

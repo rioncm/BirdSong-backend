@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 import wave
@@ -64,7 +65,13 @@ class BaseAnalyzer:
         logger.setLevel(logging.INFO)
         if not logger.handlers:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
-            handler = logging.FileHandler(self.log_path, encoding="utf-8")
+            handler = TimedRotatingFileHandler(
+                filename=str(self.log_path),
+                when="midnight",
+                backupCount=7,
+                encoding="utf-8",
+                utc=True,
+            )
             formatter = logging.Formatter(
                 "%(asctime)s | %(levelname)s | %(message)s",
                 datefmt="%Y-%m-%dT%H:%M:%S%z",
