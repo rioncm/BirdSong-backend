@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import hashlib
 from datetime import date, datetime, time, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from sqlalchemy import and_, func, insert, select, update
+from sqlalchemy import and_, func, insert, select, update, or_
 from sqlalchemy.orm import Session
 
-from .tables import data_citations, data_sources, days, idents, recordings, species
+from .tables import (
+    data_citations,
+    data_sources,
+    days,
+    idents,
+    recordings,
+    species,
+    weather_sites,
+)
 
 
 def generate_species_id(scientific_name: str) -> str:
@@ -290,6 +298,7 @@ def upsert_day_forecast(
     season: Optional[str],
     issued_at: Optional[datetime],
     source: Optional[str] = None,
+    forecast_office: Optional[str] = None,
 ) -> None:
     existing = get_day(session, target_date)
 
@@ -306,6 +315,7 @@ def upsert_day_forecast(
         "season": season,
         "forecast_issued_at": issued_at,
         "forecast_source": source,
+        "forecast_office": forecast_office,
     }
 
     sanitized = {key: value for key, value in payload.items() if value is not None}
@@ -329,6 +339,8 @@ def update_day_actuals(
     actual_rain: Optional[float],
     updated_at: Optional[datetime],
     source: Optional[str] = None,
+    station_id: Optional[str] = None,
+    station_name: Optional[str] = None,
 ) -> None:
     existing = get_day(session, target_date)
 
@@ -338,6 +350,8 @@ def update_day_actuals(
         "actual_rain": actual_rain,
         "actual_updated_at": updated_at,
         "actual_source": source,
+        "observation_station_id": station_id,
+        "observation_station_name": station_name,
     }
     sanitized = {key: value for key, value in payload.items() if value is not None}
 
@@ -354,3 +368,82 @@ def update_day_actuals(
                 **sanitized,
             )
         )
+
+
+def get_weather_site_by_key(session: Session, site_key: str) -> Optional[Dict[str, Any]]:
+    result = session.execute(
+        select(weather_sites).where(weather_sites.c.site_key == site_key)
+    ).mappings().first()
+    return dict(result) if result is not None else None
+
+
+def upsert_weather_site(
+    session: Session,
+    *,
+    site_key: str,
+    latitude: float,
+    longitude: float,
+    timezone: Optional[str],
+    grid_id: Optional[str],
+    grid_x: Optional[int],
+    grid_y: Optional[int],
+    forecast_office: Optional[str],
+    station_id: Optional[str],
+    station_name: Optional[str],
+    last_refreshed: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    existing = get_weather_site_by_key(session, site_key)
+    payload = {
+        "site_key": site_key,
+        "latitude": latitude,
+        "longitude": longitude,
+        "timezone": timezone,
+        "grid_id": grid_id,
+        "grid_x": grid_x,
+        "grid_y": grid_y,
+        "forecast_office": forecast_office,
+        "station_id": station_id,
+        "station_name": station_name,
+        "last_refreshed": last_refreshed,
+    }
+
+    if existing:
+        session.execute(
+            update(weather_sites)
+            .where(weather_sites.c.site_id == existing["site_id"])
+            .values({key: value for key, value in payload.items() if value is not None})
+        )
+        session.flush()
+        refreshed = get_weather_site_by_key(session, site_key)
+        if refreshed is None:
+            raise RuntimeError("Failed to reload weather site after update")
+        return refreshed
+
+    session.execute(insert(weather_sites).values(payload))
+    session.flush()
+    created = get_weather_site_by_key(session, site_key)
+    if created is None:
+        raise RuntimeError("Failed to create weather site record")
+    return created
+
+
+def list_days_missing_actuals(
+    session: Session,
+    *,
+    before_date: date,
+    limit: int = 7,
+) -> List[date]:
+    rows = session.execute(
+        select(days.c.date)
+        .where(
+            days.c.date < before_date,
+            or_(
+                days.c.actual_high.is_(None),
+                days.c.actual_low.is_(None),
+                days.c.actual_rain.is_(None),
+            ),
+        )
+        .order_by(days.c.date.asc())
+        .limit(limit)
+    ).scalars().all()
+    return list(rows)

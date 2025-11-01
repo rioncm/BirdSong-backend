@@ -55,11 +55,14 @@ days = Table(
     Column("forecast_rain", Float),
     Column("forecast_issued_at", DateTime),
     Column("forecast_source", String(128)),
+    Column("forecast_office", String(128)),
     Column("actual_high", Float),
     Column("actual_low", Float),
     Column("actual_rain", Float),
     Column("actual_updated_at", DateTime),
     Column("actual_source", String(128)),
+    Column("observation_station_id", String(64)),
+    Column("observation_station_name", String(128)),
     Column("season", String(32)),
 )
 
@@ -92,6 +95,25 @@ recordings = Table(
     Column("source_display_name", String(255)),
     Column("source_location", String(255)),
     Column("created_at", DateTime, default=datetime.utcnow, nullable=False),
+)
+
+weather_sites = Table(
+    "weather_sites",
+    metadata,
+    Column("site_id", Integer, primary_key=True, autoincrement=True),
+    Column("site_key", String(64), nullable=False, unique=True),
+    Column("latitude", Float, nullable=False),
+    Column("longitude", Float, nullable=False),
+    Column("timezone", String(64)),
+    Column("grid_id", String(32)),
+    Column("grid_x", Integer),
+    Column("grid_y", Integer),
+    Column("forecast_office", String(128)),
+    Column("station_id", String(64)),
+    Column("station_name", String(128)),
+    Column("last_refreshed", DateTime),
+    Column("created_at", DateTime, default=datetime.utcnow, nullable=False),
+    Column("updated_at", DateTime, default=datetime.utcnow, onupdate=datetime.utcnow),
 )
 
 idents = Table(
@@ -176,6 +198,7 @@ TABLES = {
     "days": days,
     "species": species,
     "recordings": recordings,
+    "weather_sites": weather_sites,
     "idents": idents,
     "data_sources": data_sources,
     "data_citations": data_citations,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
 from astral import LocationInfo
@@ -15,6 +15,23 @@ from lib.data.db import get_session
 
 
 NOAA_SOURCE_LABEL = "NOAA NWS"
+SITE_REFRESH_INTERVAL = timedelta(days=7)
+
+
+@dataclass(frozen=True)
+class WeatherSite:
+    site_id: int
+    site_key: str
+    latitude: float
+    longitude: float
+    timezone: str
+    grid_id: str
+    grid_x: int
+    grid_y: int
+    forecast_office: Optional[str]
+    station_id: Optional[str]
+    station_name: Optional[str]
+    last_refreshed: Optional[datetime]
 
 
 @dataclass(frozen=True)
@@ -31,6 +48,10 @@ class ForecastResult:
     season: Optional[str]
     issued_at: Optional[datetime]
     timezone: str
+    grid_id: Optional[str]
+    grid_x: Optional[int]
+    grid_y: Optional[int]
+    forecast_office: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -40,6 +61,8 @@ class ObservationResult:
     actual_low: Optional[float]
     actual_rain: Optional[float]
     updated_at: Optional[datetime]
+    station_id: Optional[str]
+    station_name: Optional[str]
 
 
 def determine_season(target_date: date, latitude: float) -> str:
@@ -85,6 +108,149 @@ def _iso_to_datetime(value: str) -> datetime:
         value = value[:-1] + "+00:00"
     return datetime.fromisoformat(value)
 
+
+def _normalize_db_datetime(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            try:
+                return _iso_to_datetime(value)
+            except ValueError:
+                return None
+    return None
+
+
+def _build_site_key(latitude: float, longitude: float) -> str:
+    return f"{latitude:.4f},{longitude:.4f}"
+
+
+def _pick_station(stations_payload: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    features = stations_payload.get("features") or []
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        props = feature.get("properties") or {}
+        station_id = props.get("stationIdentifier") or props.get("station_id") or props.get("id")
+        if not station_id:
+            continue
+        name = props.get("name")
+        return str(station_id), name if isinstance(name, str) else None
+    return None, None
+
+
+def _ensure_weather_site(
+    *,
+    client: NoaaClient,
+    latitude: float,
+    longitude: float,
+    timezone_hint: Optional[str] = None,
+) -> WeatherSite:
+    site_key = _build_site_key(latitude, longitude)
+    session = get_session()
+    try:
+        record = crud.get_weather_site_by_key(session, site_key)
+        now = datetime.utcnow()
+        record_timezone = record.get("timezone") if record else None
+        if timezone_hint and timezone_hint != record_timezone:
+            record_timezone = timezone_hint
+
+        def _needs_refresh(entry: Optional[Dict[str, Any]]) -> bool:
+            if entry is None:
+                return True
+            required_fields = ("grid_id", "grid_x", "grid_y", "station_id")
+            for field in required_fields:
+                if entry.get(field) in (None, ""):
+                    return True
+            last_refreshed = _normalize_db_datetime(entry.get("last_refreshed"))
+            if last_refreshed is None:
+                return True
+            return now - last_refreshed.replace(tzinfo=None) > SITE_REFRESH_INTERVAL
+
+        if _needs_refresh(record):
+            point = client.get_point(latitude, longitude)
+            properties = point.get("properties") or {}
+            grid_id = properties.get("gridId")
+            grid_x = properties.get("gridX")
+            grid_y = properties.get("gridY")
+            tz_name = (
+                timezone_hint
+                or properties.get("timeZone")
+                or record_timezone
+                or "UTC"
+            )
+            forecast_office = properties.get("forecastOffice")
+            stations_url = properties.get("observationStations")
+            station_id: Optional[str] = None
+            station_name: Optional[str] = None
+            if isinstance(stations_url, str) and stations_url:
+                stations_payload = client.get_observation_stations(stations_url)
+                station_id, station_name = _pick_station(stations_payload)
+
+            record = crud.upsert_weather_site(
+                session,
+                site_key=site_key,
+                latitude=latitude,
+                longitude=longitude,
+                timezone=tz_name,
+                grid_id=str(grid_id) if grid_id is not None else None,
+                grid_x=int(grid_x) if grid_x is not None else None,
+                grid_y=int(grid_y) if grid_y is not None else None,
+                forecast_office=forecast_office,
+                station_id=station_id,
+                station_name=station_name,
+                last_refreshed=now,
+            )
+            session.commit()
+        elif timezone_hint and record_timezone != timezone_hint:
+            record = crud.upsert_weather_site(
+                session,
+                site_key=site_key,
+                latitude=latitude,
+                longitude=longitude,
+                timezone=timezone_hint,
+                grid_id=record.get("grid_id"),
+                grid_x=record.get("grid_x"),
+                grid_y=record.get("grid_y"),
+                forecast_office=record.get("forecast_office"),
+                station_id=record.get("station_id"),
+                station_name=record.get("station_name"),
+                last_refreshed=record.get("last_refreshed"),
+            )
+            session.commit()
+        else:
+            session.rollback()
+
+        final_record = crud.get_weather_site_by_key(session, site_key)
+        if final_record is None:
+            raise RuntimeError("Failed to persist NOAA site metadata")
+
+        tz_name = (
+            final_record.get("timezone")
+            or timezone_hint
+            or "UTC"
+        )
+
+        return WeatherSite(
+            site_id=int(final_record["site_id"]),
+            site_key=site_key,
+            latitude=float(final_record["latitude"]),
+            longitude=float(final_record["longitude"]),
+            timezone=str(tz_name),
+            grid_id=str(final_record.get("grid_id")) if final_record.get("grid_id") is not None else None,
+            grid_x=int(final_record["grid_x"]) if final_record.get("grid_x") is not None else None,
+            grid_y=int(final_record["grid_y"]) if final_record.get("grid_y") is not None else None,
+            forecast_office=final_record.get("forecast_office"),
+            station_id=str(final_record.get("station_id")) if final_record.get("station_id") else None,
+            station_name=final_record.get("station_name"),
+            last_refreshed=_normalize_db_datetime(final_record.get("last_refreshed")),
+        )
+    finally:
+        session.close()
 
 def _parse_forecast(
     forecast_payload: Dict[str, Any],
@@ -163,25 +329,17 @@ def _compute_solar_events(
 def refresh_daily_forecast(
     *,
     client: NoaaClient,
-    latitude: float,
-    longitude: float,
+    site: WeatherSite,
     target_date: Optional[date] = None,
-    timezone_hint: Optional[str] = None,
 ) -> ForecastResult:
     target = target_date or datetime.now().date()
-    point = client.get_point(latitude, longitude)
-    properties = point.get("properties") or {}
-    grid_id = properties.get("gridId")
-    grid_x = properties.get("gridX")
-    grid_y = properties.get("gridY")
+    if site.grid_id is None or site.grid_x is None or site.grid_y is None:
+        raise NoaaClientError("Weather site missing grid metadata; refresh required.")
 
-    if grid_id is None or grid_x is None or grid_y is None:
-        raise NoaaClientError("Grid metadata missing from NOAA point response")
-
-    tz_name = timezone_hint or properties.get("timeZone") or "UTC"
+    tz_name = site.timezone or "UTC"
     tz = ZoneInfo(tz_name)
 
-    forecast_payload = client.get_forecast(str(grid_id), int(grid_x), int(grid_y))
+    forecast_payload = client.get_forecast(str(site.grid_id), int(site.grid_x), int(site.grid_y))
     forecast_high, forecast_low, rain_probability, issued_at = _parse_forecast(
         forecast_payload,
         target,
@@ -189,13 +347,13 @@ def refresh_daily_forecast(
     )
 
     dawn, sunrise, solar_noon, sunset, dusk = _compute_solar_events(
-        latitude,
-        longitude,
+        site.latitude,
+        site.longitude,
         tz_name,
         target,
     )
 
-    season = determine_season(target, latitude)
+    season = determine_season(target, site.latitude)
 
     return ForecastResult(
         target_date=target,
@@ -210,6 +368,10 @@ def refresh_daily_forecast(
         season=season,
         issued_at=issued_at,
         timezone=tz_name,
+        grid_id=site.grid_id,
+        grid_x=site.grid_x,
+        grid_y=site.grid_y,
+        forecast_office=site.forecast_office,
     )
 
 
@@ -230,6 +392,7 @@ def store_forecast(result: ForecastResult) -> None:
             season=result.season,
             issued_at=result.issued_at,
             source=NOAA_SOURCE_LABEL,
+            forecast_office=result.forecast_office,
         )
         session.commit()
     finally:
@@ -257,29 +420,19 @@ def _convert_precipitation(value: Optional[float], unit: Optional[str]) -> Optio
 def backfill_observations(
     *,
     client: NoaaClient,
-    latitude: float,
-    longitude: float,
+    site: WeatherSite,
     target_date: Optional[date] = None,
-    timezone_hint: Optional[str] = None,
 ) -> ObservationResult:
-    target = target_date or (datetime.now().date() - timedelta(days=1))
-    point = client.get_point(latitude, longitude)
-    properties = point.get("properties") or {}
-    tz_name = timezone_hint or properties.get("timeZone") or "UTC"
+    if site.station_id is None:
+        raise NoaaClientError("Weather site missing observation station metadata; refresh required.")
+    tz_name = site.timezone or "UTC"
     tz = ZoneInfo(tz_name)
 
-    stations_url = properties.get("observationStations")
-    stations_payload = client.get_observation_stations(stations_url)
-    features = stations_payload.get("features") or []
-    if not features:
-        raise NoaaClientError("No NOAA observation stations returned for location")
-    station_id = (
-        features[0]
-        .get("properties", {})
-        .get("stationIdentifier")
-    )
-    if not station_id:
-        raise NoaaClientError("Unable to resolve station identifier for observations")
+    if target_date is None:
+        local_today = datetime.now(tz).date()
+        target = local_today - timedelta(days=1)
+    else:
+        target = target_date
 
     start_dt = datetime.combine(target, time(0, 0), tzinfo=tz).astimezone(ZoneInfo("UTC"))
     end_dt = (datetime.combine(target, time(23, 59), tzinfo=tz) + timedelta(minutes=59)).astimezone(
@@ -287,7 +440,7 @@ def backfill_observations(
     )
 
     observations_payload = client.get_observations(
-        station_id,
+        site.station_id,
         start=start_dt.isoformat(),
         end=end_dt.isoformat(),
         limit=500,
@@ -330,7 +483,7 @@ def backfill_observations(
             rain_total += converted_precip
             has_precip = True
 
-    rain_total_final = rain_total if has_precip else None
+    rain_total_final = rain_total if has_precip else 0.0
 
     return ObservationResult(
         target_date=target,
@@ -338,6 +491,8 @@ def backfill_observations(
         actual_low=low,
         actual_rain=rain_total_final,
         updated_at=latest_timestamp,
+        station_id=site.station_id,
+        station_name=site.station_name,
     )
 
 
@@ -352,6 +507,8 @@ def store_observations(result: ObservationResult) -> None:
             actual_rain=result.actual_rain,
             updated_at=result.updated_at,
             source=NOAA_SOURCE_LABEL,
+            station_id=result.station_id,
+            station_name=result.station_name,
         )
         session.commit()
     finally:
@@ -381,6 +538,26 @@ def _pick_primary_coordinates(config: AppConfig) -> Optional[Tuple[float, float]
         if coords:
             return coords
 
+    if birdsong.default_latitude is not None and birdsong.default_longitude is not None:
+        return float(birdsong.default_latitude), float(birdsong.default_longitude)
+
+    return None
+
+
+def resolve_noaa_user_agent(resources: Dict[str, object]) -> Optional[str]:
+    user_agents = resources.get("data_source_user_agents") or {}
+    if isinstance(user_agents, dict):
+        user_agent = user_agents.get(NOAA_SOURCE_LABEL)
+        if user_agent:
+            return str(user_agent)
+
+    headers = resources.get("data_source_headers") or {}
+    if isinstance(headers, dict):
+        entry = headers.get(NOAA_SOURCE_LABEL)
+        if isinstance(entry, dict):
+            ua = entry.get("User-Agent")
+            if ua:
+                return str(ua)
     return None
 
 
@@ -392,7 +569,7 @@ def update_daily_weather_from_config(
     include_actuals: bool = False,
     timezone_hint: Optional[str] = None,
     user_agent: Optional[str] = None,
-) -> Tuple[ForecastResult, Optional[ObservationResult]]:
+) -> Tuple[ForecastResult, Sequence[ObservationResult]]:
     coordinates = _pick_primary_coordinates(config)
     if coordinates is None:
         raise ValueError(
@@ -405,27 +582,59 @@ def update_daily_weather_from_config(
         close_client = True
 
     try:
-        forecast = refresh_daily_forecast(
+        site = _ensure_weather_site(
             client=client,
             latitude=coordinates[0],
             longitude=coordinates[1],
-            target_date=target_date,
             timezone_hint=timezone_hint,
+        )
+        forecast = refresh_daily_forecast(
+            client=client,
+            site=site,
+            target_date=target_date,
         )
         store_forecast(forecast)
 
-        observation_result = None
+        observation_results: List[ObservationResult] = []
         if include_actuals:
-            observation_result = backfill_observations(
-                client=client,
-                latitude=coordinates[0],
-                longitude=coordinates[1],
-                target_date=target_date,
-                timezone_hint=timezone_hint,
-            )
-            store_observations(observation_result)
+            tz_name = site.timezone or "UTC"
+            tz = ZoneInfo(tz_name)
+            anchor_date = target_date or datetime.now(tz).date()
 
-        return forecast, observation_result
+            session = get_session()
+            try:
+                missing_dates = crud.list_days_missing_actuals(
+                    session,
+                    before_date=anchor_date + timedelta(days=1),
+                    limit=14,
+                )
+                previous_day = anchor_date - timedelta(days=1)
+                previous_day_needs = False
+                if previous_day < anchor_date:
+                    day_row = crud.get_day(session, previous_day)
+                    if day_row is None or any(
+                        day_row.get(field) is None for field in ("actual_high", "actual_low", "actual_rain")
+                    ):
+                        previous_day_needs = True
+            finally:
+                session.close()
+
+            observation_targets = {day for day in missing_dates if day < anchor_date}
+            if target_date is not None and target_date <= anchor_date:
+                observation_targets.add(target_date)
+            if previous_day < anchor_date and previous_day_needs:
+                observation_targets.add(previous_day)
+
+            for observation_date in sorted(observation_targets):
+                result = backfill_observations(
+                    client=client,
+                    site=site,
+                    target_date=observation_date,
+                )
+                store_observations(result)
+                observation_results.append(result)
+
+        return forecast, observation_results
     finally:
         if close_client:
             client.close()

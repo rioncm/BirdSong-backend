@@ -309,10 +309,18 @@ def initialize_environment(
         ),
     }
 
+    def _to_optional_float(value: Any) -> Optional[float]:
+        if value in (None, "", "null"):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     streams_section = dict(birdsong_section.get("streams") or {})
     stream_base_raw = streams_section.pop("base_path", None)
-    default_latitude = streams_section.pop("default_latitude", None)
-    default_longitude = streams_section.pop("default_longitude", None)
+    default_latitude = _to_optional_float(streams_section.pop("default_latitude", None))
+    default_longitude = _to_optional_float(streams_section.pop("default_longitude", None))
 
     stream_base_path = None
     if stream_base_raw:
@@ -361,10 +369,10 @@ def initialize_environment(
         }
         stream_output_paths[stream_name] = stream_output_path
 
-        latitude = stream_details.get("latitude")
+        latitude = _to_optional_float(stream_details.get("latitude"))
         if latitude is None:
             latitude = default_latitude
-        longitude = stream_details.get("longitude")
+        longitude = _to_optional_float(stream_details.get("longitude"))
         if longitude is None:
             longitude = default_longitude
         if latitude is not None and longitude is not None:
@@ -374,8 +382,8 @@ def initialize_environment(
 
     microphones_section = dict(birdsong_section.get("microphones") or {})
     mic_base_raw = microphones_section.pop("base_path", None)
-    mic_default_latitude = microphones_section.pop("default_latitude", None)
-    mic_default_longitude = microphones_section.pop("default_longitude", None)
+    mic_default_latitude = _to_optional_float(microphones_section.pop("default_latitude", None))
+    mic_default_longitude = _to_optional_float(microphones_section.pop("default_longitude", None))
 
     mic_base_path = None
     if mic_base_raw:
@@ -414,10 +422,10 @@ def initialize_environment(
             mic_output_path = _resolve_path(output_folder, base_dir_path)
         mic_output_path.mkdir(parents=True, exist_ok=True)
 
-        latitude = mic_details.get("latitude")
+        latitude = _to_optional_float(mic_details.get("latitude"))
         if latitude is None:
             latitude = mic_default_latitude
-        longitude = mic_details.get("longitude")
+        longitude = _to_optional_float(mic_details.get("longitude"))
         if longitude is None:
             longitude = mic_default_longitude
 
@@ -458,6 +466,9 @@ def initialize_environment(
             }
         )
 
+    fallback_latitude = default_latitude if default_latitude is not None else mic_default_latitude
+    fallback_longitude = default_longitude if default_longitude is not None else mic_default_longitude
+
     normalized_config = {
         "birdsong": {
             "database": normalized_database,
@@ -465,6 +476,8 @@ def initialize_environment(
             "streams": stream_configs,
             "microphones": microphone_configs,
             "alerts": alerts_config,
+            "default_latitude": fallback_latitude,
+            "default_longitude": fallback_longitude,
         }
     }
 

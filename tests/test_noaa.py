@@ -17,6 +17,7 @@ from lib.data.tables import days
 from lib.noaa import (
     ObservationResult,
     ForecastResult,
+    WeatherSite,
     backfill_observations,
     refresh_daily_forecast,
     store_forecast,
@@ -32,6 +33,7 @@ POINT_PAYLOAD: Dict[str, object] = {
         "gridY": 80,
         "timeZone": "America/Los_Angeles",
         "observationStations": "https://api.weather.gov/gridpoints/HNX/100,80/stations",
+        "forecastOffice": "https://api.weather.gov/offices/HNX",
     }
 }
 
@@ -60,6 +62,7 @@ STATIONS_PAYLOAD: Dict[str, object] = {
         {
             "properties": {
                 "stationIdentifier": "TEST",
+                "name": "Test Station",
             }
         }
     ]
@@ -83,6 +86,21 @@ OBSERVATIONS_PAYLOAD: Dict[str, object] = {
         },
     ]
 }
+
+TEST_SITE = WeatherSite(
+    site_id=1,
+    site_key="36.8000,-119.8000",
+    latitude=36.8,
+    longitude=-119.8,
+    timezone="America/Los_Angeles",
+    grid_id="HNX",
+    grid_x=100,
+    grid_y=80,
+    forecast_office="https://api.weather.gov/offices/HNX",
+    station_id="TEST",
+    station_name="Test Station",
+    last_refreshed=None,
+)
 
 
 class StubNoaaClient(NoaaClient):
@@ -128,8 +146,7 @@ def test_refresh_and_store_forecast(temp_database):
     target = date(2025, 10, 19)
     forecast = refresh_daily_forecast(
         client=client,
-        latitude=36.8,
-        longitude=-119.8,
+        site=TEST_SITE,
         target_date=target,
     )
 
@@ -154,6 +171,7 @@ def test_refresh_and_store_forecast(temp_database):
     assert stored["forecast_low"] == 55
     assert pytest.approx(stored["forecast_rain"], rel=1e-6) == 0.2
     assert stored["season"] == "autumn"
+    assert stored["forecast_office"] == "https://api.weather.gov/offices/HNX"
 
 
 def test_backfill_and_store_observations(temp_database):
@@ -161,8 +179,7 @@ def test_backfill_and_store_observations(temp_database):
     target = date(2025, 10, 19)
     observation = backfill_observations(
         client=client,
-        latitude=36.8,
-        longitude=-119.8,
+        site=TEST_SITE,
         target_date=target,
     )
     assert isinstance(observation, ObservationResult)
@@ -184,6 +201,8 @@ def test_backfill_and_store_observations(temp_database):
     assert pytest.approx(stored["actual_high"], rel=1e-6) == 68.0
     assert pytest.approx(stored["actual_low"], rel=1e-6) == 53.6
     assert pytest.approx(stored["actual_rain"], rel=1e-6) == 0.0393700787
+    assert stored["observation_station_id"] == "TEST"
+    assert stored["observation_station_name"] == "Test Station"
 
 
 def test_update_daily_weather_from_config(temp_database):
@@ -197,10 +216,12 @@ def test_update_daily_weather_from_config(temp_database):
                 )
             },
             streams={},
+            default_latitude=36.8,
+            default_longitude=-119.8,
         )
     )
 
-    forecast, observation = update_daily_weather_from_config(
+    forecast, observations = update_daily_weather_from_config(
         config,
         client=client,
         target_date=date(2025, 10, 19),
@@ -208,5 +229,5 @@ def test_update_daily_weather_from_config(temp_database):
     )
 
     assert forecast.forecast_high == 78
-    assert observation is not None
-    assert observation.actual_high is not None
+    assert observations
+    assert any(obs.actual_high is not None for obs in observations)

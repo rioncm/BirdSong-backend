@@ -16,30 +16,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.clients.noaa import NoaaClient
-from lib.noaa import update_daily_weather_from_config
+from lib.noaa import resolve_noaa_user_agent, update_daily_weather_from_config
 from lib.setup import initialize_environment
 
 
 logger = logging.getLogger("birdsong.jobs.noaa")
-
-
-def _resolve_user_agent(resources: dict) -> Optional[str]:
-    user_agents = resources.get("data_source_user_agents") or {}
-    if isinstance(user_agents, dict):
-        user_agent = user_agents.get("NOAA NWS")
-        if user_agent:
-            return str(user_agent)
-
-    headers = resources.get("data_source_headers") or {}
-    if isinstance(headers, dict):
-        entry = headers.get("NOAA NWS")
-        if isinstance(entry, dict):
-            ua = entry.get("User-Agent")
-            if ua:
-                return str(ua)
-    return None
-
-
 def run_update(
     *,
     config_path: Path,
@@ -52,15 +33,16 @@ def run_update(
         target or "today",
         include_actuals,
     )
+    logger.warning("noaa_update CLI is deprecated; rely on automated scheduling for routine updates.")
 
     config_data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     app_config, resources = initialize_environment(config_data=config_data, base_dir=config_path.parent)
 
-    user_agent = _resolve_user_agent(resources)
+    user_agent = resolve_noaa_user_agent(resources)
     client = NoaaClient(user_agent=user_agent)
 
     try:
-        forecast, observation = update_daily_weather_from_config(
+        forecast, observations = update_daily_weather_from_config(
             app_config,
             client=client,
             target_date=target,
@@ -75,14 +57,15 @@ def run_update(
             forecast.forecast_low,
             forecast.forecast_rain,
         )
-        if observation:
-            logger.info(
-                "Stored NOAA observations for %s (high=%s low=%s rain_total=%s)",
-                observation.target_date,
-                observation.actual_high,
-                observation.actual_low,
-                observation.actual_rain,
-            )
+        if observations:
+            for observation in observations:
+                logger.info(
+                    "Stored NOAA observations for %s (high=%s low=%s rain_total=%s)",
+                    observation.target_date,
+                    observation.actual_high,
+                    observation.actual_low,
+                    observation.actual_rain,
+                )
     finally:
         client.close()
 

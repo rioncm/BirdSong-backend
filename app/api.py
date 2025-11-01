@@ -50,6 +50,7 @@ from lib.enrichment import SpeciesEnricher, SpeciesEnrichmentError
 from lib.logging_utils import setup_debug_logging
 from lib.persistence import persist_analysis_results
 from lib.setup import initialize_environment
+from lib.noaa_scheduler import NoaaUpdateScheduler
 from lib.schemas import (
     CitationEntry,
     DayActuals,
@@ -598,6 +599,9 @@ async def startup_event() -> None:
         notification_service = None
         scheduler = None
 
+    noaa_scheduler = NoaaUpdateScheduler(app_config, resources)
+    noaa_scheduler.start()
+
     def _publish_alert(event: AlertEvent) -> None:
         logger.info("Alert emitted", extra={"alert": event.to_dict()})
         if notification_service:
@@ -612,6 +616,7 @@ async def startup_event() -> None:
     app.state.alert_engine = alert_engine
     app.state.notification_service = notification_service
     app.state.summary_scheduler = scheduler
+    app.state.noaa_scheduler = noaa_scheduler
 
 
 @app.on_event("shutdown")
@@ -626,6 +631,9 @@ async def shutdown_event() -> None:
     if notification_service is not None:
         notification_service.flush_summaries()
         notification_service.close()
+    noaa_scheduler: NoaaUpdateScheduler | None = getattr(app.state, "noaa_scheduler", None)
+    if noaa_scheduler is not None:
+        await noaa_scheduler.stop()
 
 
 def _ensure_state(

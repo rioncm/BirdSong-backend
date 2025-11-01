@@ -177,9 +177,19 @@ class BirdsongConfig:
     streams: Dict[str, StreamConfig] = field(default_factory=dict)
     microphones: Dict[str, MicrophoneConfig] = field(default_factory=dict)
     alerts: Dict[str, Any] = field(default_factory=dict)
+    default_latitude: Optional[float] = None
+    default_longitude: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Dict]) -> "BirdsongConfig":
+        def to_optional_float(value: Any) -> Optional[float]:
+            if value in (None, "", "null"):
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
         streams_raw = data.get("streams", {})
         streams = {
             name: StreamConfig.from_dict(stream_conf, stream_name=name)
@@ -190,12 +200,25 @@ class BirdsongConfig:
             name: MicrophoneConfig.from_dict(mic_conf, microphone_name=name)
             for name, mic_conf in microphones_raw.items()
         }
+        default_latitude = to_optional_float(data.get("default_latitude"))
+        default_longitude = to_optional_float(data.get("default_longitude"))
+        if default_latitude is None:
+            default_latitude = to_optional_float(streams_raw.get("default_latitude"))
+        if default_longitude is None:
+            default_longitude = to_optional_float(streams_raw.get("default_longitude"))
+        if default_latitude is None or default_longitude is None:
+            mic_defaults_lat = to_optional_float(microphones_raw.get("default_latitude"))
+            mic_defaults_lon = to_optional_float(microphones_raw.get("default_longitude"))
+            default_latitude = default_latitude or mic_defaults_lat
+            default_longitude = default_longitude or mic_defaults_lon
         return cls(
             database=DatabaseConfig.from_dict(data["database"]),
             config=BirdNetConfig.from_dict(data["config"]),
             streams=streams,
             microphones=microphones,
             alerts=data.get("alerts", {}),
+            default_latitude=default_latitude,
+            default_longitude=default_longitude,
         )
 
 

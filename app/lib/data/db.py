@@ -203,6 +203,38 @@ def _upgrade_0006_recordings_duration(connection: Connection) -> None:
         connection.execute(text("ALTER TABLE recordings ADD COLUMN duration_seconds FLOAT"))
 
 
+def _upgrade_0007_weather_sites(connection: Connection) -> None:
+    if not _column_exists(connection, "days", "forecast_office"):
+        connection.execute(text("ALTER TABLE days ADD COLUMN forecast_office VARCHAR(128)"))
+    if not _column_exists(connection, "days", "observation_station_id"):
+        connection.execute(text("ALTER TABLE days ADD COLUMN observation_station_id VARCHAR(64)"))
+    if not _column_exists(connection, "days", "observation_station_name"):
+        connection.execute(text("ALTER TABLE days ADD COLUMN observation_station_name VARCHAR(128)"))
+
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS weather_sites (
+                site_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site_key VARCHAR(64) NOT NULL UNIQUE,
+                latitude FLOAT NOT NULL,
+                longitude FLOAT NOT NULL,
+                timezone VARCHAR(64),
+                grid_id VARCHAR(32),
+                grid_x INTEGER,
+                grid_y INTEGER,
+                forecast_office VARCHAR(128),
+                station_id VARCHAR(64),
+                station_name VARCHAR(128),
+                last_refreshed TIMESTAMP,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+
+
 # Register migrations at import time.
 register_migration("0001_initial", _initial_schema)
 register_migration("0002_days_metadata", _upgrade_0002_days_metadata)
@@ -210,3 +242,4 @@ register_migration("0003_recordings_source_metadata", _upgrade_0003_recordings_s
 register_migration("0004_species_summary", _upgrade_0004_species_summary)
 register_migration("0005_species_ebird_code", _upgrade_0005_species_ebird_code)
 register_migration("0006_recordings_duration", _upgrade_0006_recordings_duration)
+register_migration("0007_weather_sites", _upgrade_0007_weather_sites)
