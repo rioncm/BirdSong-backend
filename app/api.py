@@ -1354,7 +1354,7 @@ def get_species_detail(request: Request, species_id: str) -> SpeciesDetailRespon
     taxonomy = TaxonomyDetail(
         kingdom=species_row.get("kingdom"),
         phylum=species_row.get("phylum"),
-        class_=species_row.get("class"),
+        **{"class": species_row.get("class")},
         order=species_row.get("order"),
         family=species_row.get("family"),
         genus=species_row.get("genus"),
@@ -1388,6 +1388,11 @@ def get_species_detail(request: Request, species_id: str) -> SpeciesDetailRespon
 def get_day_overview(request: Request, day: str) -> DayOverviewResponse:
     _ensure_state(request)
     target_date = _parse_date_param(day, "day")
+    if target_date is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or missing day parameter",
+        )
     session = get_session()
     try:
         day_row = crud.get_day(session, target_date)
