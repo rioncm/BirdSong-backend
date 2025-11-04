@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM ubuntu/python:3.10-22.04_stable
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
