@@ -3,6 +3,7 @@ numpy
 pyyaml
 pygbif
 fastapi
+librosa
 uvicorn[standard]
 python-multipart
 sqlalchemy
