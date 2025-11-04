@@ -1,9 +1,11 @@
 birdnetlib
 numpy
 pyyaml
+librosa
+tensorflow; platform_system != "Darwin"
+#tensorflow-macos; platform_system == "Darwin"
 pygbif
 fastapi
-librosa
 uvicorn[standard]
 python-multipart
 sqlalchemy
