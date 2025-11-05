@@ -79,11 +79,14 @@ class NoaaClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
-    def get_point(self, latitude: float, longitude: float) -> Dict[str, Any]:
+    def get_point(self, latitude: float, longitude: float, *, refresh: bool = False) -> Dict[str, Any]:
         key = (round(latitude, 4), round(longitude, 4))
-        cached = self._point_cache.get(key)
-        if cached is not None:
-            return cached
+        if refresh:
+            self._point_cache.pop(key, None)
+        else:
+            cached = self._point_cache.get(key)
+            if cached is not None:
+                return cached
 
         path = f"/points/{latitude},{longitude}"
 

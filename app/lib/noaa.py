@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -16,6 +17,8 @@ from lib.data.db import get_session
 
 NOAA_SOURCE_LABEL = "NOAA NWS"
 SITE_REFRESH_INTERVAL = timedelta(days=7)
+
+logger = logging.getLogger("birdsong.noaa")
 
 
 @dataclass(frozen=True)
@@ -149,6 +152,7 @@ def _ensure_weather_site(
     latitude: float,
     longitude: float,
     timezone_hint: Optional[str] = None,
+    force_refresh: bool = False,
 ) -> WeatherSite:
     site_key = _build_site_key(latitude, longitude)
     session = get_session()
@@ -171,8 +175,21 @@ def _ensure_weather_site(
                 return True
             return now - last_refreshed.replace(tzinfo=None) > SITE_REFRESH_INTERVAL
 
-        if _needs_refresh(record):
-            point = client.get_point(latitude, longitude)
+        needs_refresh = force_refresh or _needs_refresh(record)
+
+        if needs_refresh:
+            logger.info(
+                "Refreshing NOAA site metadata",
+                extra={
+                    "site_key": site_key,
+                    "force": force_refresh,
+                },
+            )
+            point = client.get_point(
+                latitude,
+                longitude,
+                refresh=force_refresh or record is not None,
+            )
             properties = point.get("properties") or {}
             grid_id = properties.get("gridId")
             grid_x = properties.get("gridX")
@@ -588,6 +605,20 @@ def update_daily_weather_from_config(
             longitude=coordinates[1],
             timezone_hint=timezone_hint,
         )
+        if site.grid_id is None or site.grid_x is None or site.grid_y is None:
+            logger.warning(
+                "NOAA site missing grid metadata; forcing refresh",
+                extra={"site_key": site.site_key},
+            )
+            site = _ensure_weather_site(
+                client=client,
+                latitude=coordinates[0],
+                longitude=coordinates[1],
+                timezone_hint=timezone_hint,
+                force_refresh=True,
+            )
+            if site.grid_id is None or site.grid_x is None or site.grid_y is None:
+                raise NoaaClientError("Unable to resolve NOAA grid metadata for configured coordinates.")
         forecast = refresh_daily_forecast(
             client=client,
             site=site,

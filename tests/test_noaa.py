@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict
+from typing import Dict, List
 
 import pytest
 from sqlalchemy import select
@@ -31,6 +31,17 @@ POINT_PAYLOAD: Dict[str, object] = {
         "gridId": "HNX",
         "gridX": 100,
         "gridY": 80,
+        "timeZone": "America/Los_Angeles",
+        "observationStations": "https://api.weather.gov/gridpoints/HNX/100,80/stations",
+        "forecastOffice": "https://api.weather.gov/offices/HNX",
+    }
+}
+
+POINT_PAYLOAD_NO_GRID: Dict[str, object] = {
+    "properties": {
+        "gridId": None,
+        "gridX": None,
+        "gridY": None,
         "timeZone": "America/Los_Angeles",
         "observationStations": "https://api.weather.gov/gridpoints/HNX/100,80/stations",
         "forecastOffice": "https://api.weather.gov/offices/HNX",
@@ -110,7 +121,7 @@ class StubNoaaClient(NoaaClient):
     def close(self) -> None:  # type: ignore[override]
         self.closed = True
 
-    def get_point(self, latitude: float, longitude: float) -> Dict[str, object]:  # type: ignore[override]
+    def get_point(self, latitude: float, longitude: float, *, refresh: bool = False) -> Dict[str, object]:  # type: ignore[override]
         return POINT_PAYLOAD
 
     def get_forecast(self, grid_id: str, grid_x: int, grid_y: int) -> Dict[str, object]:  # type: ignore[override]
@@ -121,6 +132,18 @@ class StubNoaaClient(NoaaClient):
 
     def get_observations(self, station_id: str, *, start: str, end: str, limit: int = 1000) -> Dict[str, object]:  # type: ignore[override]
         return OBSERVATIONS_PAYLOAD
+
+
+class RefreshMetadataStubNoaaClient(StubNoaaClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.point_calls: List[bool] = []
+
+    def get_point(self, latitude: float, longitude: float, *, refresh: bool = False) -> Dict[str, object]:  # type: ignore[override]
+        self.point_calls.append(refresh)
+        if len(self.point_calls) == 1:
+            return POINT_PAYLOAD_NO_GRID
+        return POINT_PAYLOAD
 
 
 @pytest.fixture()
@@ -231,3 +254,41 @@ def test_update_daily_weather_from_config(temp_database):
     assert forecast.forecast_high == 78
     assert observations
     assert any(obs.actual_high is not None for obs in observations)
+
+
+def test_update_weather_forces_metadata_refresh_when_grid_missing(temp_database):
+    client = RefreshMetadataStubNoaaClient()
+    config = SimpleNamespace(
+        birdsong=SimpleNamespace(
+            microphones={
+                "primary": SimpleNamespace(
+                    latitude=36.8,
+                    longitude=-119.8,
+                )
+            },
+            streams={},
+            default_latitude=36.8,
+            default_longitude=-119.8,
+        )
+    )
+
+    forecast, _ = update_daily_weather_from_config(
+        config,
+        client=client,
+        target_date=date(2025, 10, 19),
+        include_actuals=False,
+    )
+
+    assert forecast.grid_id == "HNX"
+    assert client.point_calls == [False, True]
+
+    session = get_session()
+    try:
+        site = crud.get_weather_site_by_key(session, f"{36.8:.4f},{-119.8:.4f}")
+    finally:
+        session.close()
+
+    assert site is not None
+    assert site["grid_id"] == "HNX"
+    assert site["grid_x"] == 100
+    assert site["grid_y"] == 80
