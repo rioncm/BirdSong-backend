@@ -158,3 +158,56 @@ class DayOverviewResponse(BaseModel):
     dusk: Optional[str] = None
     forecast: DayForecast
     actual: DayActuals
+
+
+class StatsWindow(BaseModel):
+    start: str
+    end: str
+
+
+class StatsTopSpeciesEntry(BaseModel):
+    species_id: Optional[str] = None
+    common_name: Optional[str] = None
+    detections: int = Field(..., ge=0)
+    avg_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+
+
+class StatsTopHourEntry(BaseModel):
+    bucket_start: Optional[str] = None
+    detections: int = Field(..., ge=0)
+    unique_species: int = Field(..., ge=0)
+
+
+class StatsTopStreamEntry(BaseModel):
+    device_id: Optional[str] = None
+    display_name: Optional[str] = None
+    detections: int = Field(..., ge=0)
+    unique_species: int = Field(..., ge=0)
+
+
+class StatsOverviewResponse(BaseModel):
+    generated_at: str
+    window: StatsWindow
+    detections_total: int = Field(..., ge=0)
+    unique_species: int = Field(..., ge=0)
+    active_devices: int = Field(..., ge=0)
+    avg_confidence: float = Field(..., ge=0.0, le=1.0)
+    top_species: List[StatsTopSpeciesEntry] = Field(default_factory=list)
+    top_hours: List[StatsTopHourEntry] = Field(default_factory=list)
+    top_streams: List[StatsTopStreamEntry] = Field(default_factory=list)
+
+
+class StatsMetricWindow(BaseModel):
+    start: str
+    end: str
+    value: float
+    selector: Optional[str] = None
+
+
+class DataComparisonResponse(BaseModel):
+    generated_at: str
+    metric: str
+    primary_window: StatsMetricWindow
+    comparison_window: StatsMetricWindow
+    absolute_change: float
+    percent_change: Optional[float] = None

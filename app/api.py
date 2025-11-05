@@ -53,6 +53,7 @@ from lib.setup import initialize_environment
 from lib.noaa_scheduler import NoaaUpdateScheduler
 from lib.schemas import (
     CitationEntry,
+    DataComparisonResponse,
     DayActuals,
     DayForecast,
     DayOverviewResponse,
@@ -68,8 +69,12 @@ from lib.schemas import (
     SpeciesDetailResponse,
     SpeciesImage,
     SpeciesPreview,
+    StatsMetricWindow,
+    StatsOverviewResponse,
+    StatsWindow,
     TaxonomyDetail,
 )
+from lib.stats import TimeWindow, fetch_data_comparison, fetch_overview_stats, resolve_time_window
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -137,6 +142,15 @@ def _format_datetime(value: Optional[datetime]) -> Optional[str]:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone().isoformat()
+
+
+def _format_datetime_utc(value: datetime) -> str:
+    normalized = value
+    if normalized.tzinfo is None:
+        normalized = normalized.replace(tzinfo=timezone.utc)
+    else:
+        normalized = normalized.astimezone(timezone.utc)
+    return normalized.isoformat().replace("+00:00", "Z")
 
 
 def _parse_iso_timestamp(value: str, field: str) -> datetime:
@@ -1174,6 +1188,167 @@ def timeline_detections(
         next_cursor=next_cursor,
         previous_cursor=previous_cursor,
         buckets=buckets_response,
+    )
+
+
+@app.get(
+    "/stats/overview",
+    response_model=StatsOverviewResponse,
+    summary="Dashboard overview metrics and top lists.",
+)
+def get_stats_overview(
+    request: Request,
+    start: Optional[str] = Query(
+        None,
+        description="ISO-8601 UTC start timestamp.",
+    ),
+    end: Optional[str] = Query(
+        None,
+        description="ISO-8601 UTC end timestamp.",
+    ),
+    window: Optional[str] = Query(
+        None,
+        description="Duration shorthand (e.g. '24h', '7d'). Ignored when both start and end are provided.",
+    ),
+) -> StatsOverviewResponse:
+    _, resources, *_ = _ensure_state(request)
+    device_index_raw = resources.get("device_index") if isinstance(resources, dict) else []
+    device_index: Sequence[Dict[str, Any]]
+    if isinstance(device_index_raw, list):
+        device_index = [entry for entry in device_index_raw if isinstance(entry, dict)]
+    else:
+        device_index = []
+
+    try:
+        resolved_window = resolve_time_window(start=start, end=end, window=window)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    now_utc = datetime.now(timezone.utc)
+    session = get_session()
+    try:
+        overview_metrics = fetch_overview_stats(
+            session,
+            resolved_window,
+            device_index=device_index,
+            top_species_limit=5,
+            top_hours_limit=5,
+            top_streams_limit=5,
+        )
+    finally:
+        session.close()
+
+    return StatsOverviewResponse(
+        generated_at=_format_datetime_utc(now_utc),
+        window=StatsWindow(
+            start=_format_datetime_utc(resolved_window.start),
+            end=_format_datetime_utc(resolved_window.end),
+        ),
+        detections_total=int(overview_metrics["detections_total"]),
+        unique_species=int(overview_metrics["unique_species"]),
+        active_devices=int(overview_metrics["active_devices"]),
+        avg_confidence=float(overview_metrics["avg_confidence"]),
+        top_species=overview_metrics["top_species"],
+        top_hours=overview_metrics["top_hours"],
+        top_streams=overview_metrics["top_streams"],
+    )
+
+
+@app.get(
+    "/stats/data-comparison",
+    response_model=DataComparisonResponse,
+    summary="Compare a metric against a prior period.",
+)
+def get_stats_data_comparison(
+    request: Request,
+    metric: str = Query(
+        ...,
+        description="Metric identifier (detections_total, unique_species, avg_confidence, active_devices).",
+    ),
+    comparison: str = Query(
+        ...,
+        description="Comparison selector ('prior_range', 'prior_month', 'prior_year').",
+    ),
+    start: Optional[str] = Query(
+        None,
+        description="ISO-8601 UTC start timestamp for the primary window.",
+    ),
+    end: Optional[str] = Query(
+        None,
+        description="ISO-8601 UTC end timestamp for the primary window.",
+    ),
+    window: Optional[str] = Query(
+        None,
+        description="Duration shorthand applied when explicit start/end are omitted.",
+    ),
+    species_id: Optional[str] = Query(
+        None,
+        description="Optional species identifier to scope the metric.",
+    ),
+    device_id: Optional[str] = Query(
+        None,
+        description="Optional device identifier to scope the metric.",
+    ),
+) -> DataComparisonResponse:
+    _ensure_state(request)
+    try:
+        resolved_window = resolve_time_window(start=start, end=end, window=window)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    session = get_session()
+    try:
+        comparison_payload = fetch_data_comparison(
+            session,
+            metric=metric,
+            primary_window=resolved_window,
+            selector=comparison,
+            species_id=species_id,
+            device_id=device_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+    comparison_window: TimeWindow = comparison_payload["comparison_window"]
+    now_utc = datetime.now(timezone.utc)
+
+    metrics_as_int = {"detections_total", "unique_species", "active_devices"}
+    primary_value_raw = comparison_payload["primary_value"]
+    comparison_value_raw = comparison_payload["comparison_value"]
+
+    if metric in metrics_as_int:
+        primary_value = int(round(primary_value_raw))
+        comparison_value = int(round(comparison_value_raw))
+        absolute_change = primary_value - comparison_value
+        percent_change = None
+        if comparison_value != 0:
+            percent_change = (absolute_change / comparison_value) * 100.0
+    else:
+        primary_value = float(primary_value_raw)
+        comparison_value = float(comparison_value_raw)
+        absolute_change = float(comparison_payload["absolute_change"])
+        percent_change = comparison_payload["percent_change"]
+        if percent_change is not None:
+            percent_change = float(percent_change)
+
+    return DataComparisonResponse(
+        generated_at=_format_datetime_utc(now_utc),
+        metric=metric,
+        primary_window=StatsMetricWindow(
+            start=_format_datetime_utc(resolved_window.start),
+            end=_format_datetime_utc(resolved_window.end),
+            value=primary_value,
+        ),
+        comparison_window=StatsMetricWindow(
+            start=_format_datetime_utc(comparison_window.start),
+            end=_format_datetime_utc(comparison_window.end),
+            value=comparison_value,
+            selector=comparison_payload["comparison_selector"],
+        ),
+        absolute_change=absolute_change,
+        percent_change=percent_change,
     )
 
 

@@ -113,6 +113,93 @@ Use `next_cursor` as the `before` value to page backward.
 
 ---
 
+## Stats Overview
+
+- **Method / Path:** `GET /stats/overview`
+- **Description:** Returns dashboard “hero” totals plus curated top lists so the UI can render the main view in one call.
+- **Query Parameters (optional):**
+  - `start`, `end` — ISO-8601 timestamps (UTC). When both are supplied, they define the window explicitly.
+  - `window` — duration shorthand (`1h`, `24h`, `7d`, etc.); ignored when both `start` and `end` are present. Defaults to the last 24 hours ending “now”.
+- **Response 200:**
+
+```json
+{
+  "generated_at": "2024-04-08T10:15:00Z",
+  "window": {
+    "start": "2024-04-07T10:15:00Z",
+    "end": "2024-04-08T10:15:00Z"
+  },
+  "detections_total": 1245,
+  "unique_species": 37,
+  "active_devices": 5,
+  "avg_confidence": 0.82,
+  "top_species": [
+    {
+      "species_id": "cardinalis-cardinalis",
+      "common_name": "Northern Cardinal",
+      "detections": 182,
+      "avg_confidence": 0.89
+    }
+  ],
+  "top_hours": [
+    {
+      "bucket_start": "2024-04-07T13:00:00Z",
+      "detections": 41,
+      "unique_species": 12
+    }
+  ],
+  "top_streams": [
+    {
+      "device_id": "north-side",
+      "display_name": "North Side",
+      "detections": 214,
+      "unique_species": 19
+    }
+  ]
+}
+```
+
+Use the top lists as drill-down teasers; deeper exploration can call `/stats/species/top` or `/stats/devices/activity` (once implemented).
+
+---
+
+## Stats Data Comparison
+
+- **Method / Path:** `GET /stats/data-comparison`
+- **Description:** Calculates percentage and absolute change for a metric against a prior window.
+- **Query Parameters:**
+  - `metric` — required; one of `detections_total`, `unique_species`, `avg_confidence`, `active_devices`.
+  - `comparison` — required; one of `prior_range`, `prior_month`, `prior_year`.
+  - `start`, `end` — optional ISO-8601 timestamps for the primary window.
+  - `window` — optional duration shorthand used when explicit bounds are missing.
+  - `species_id` — optional; focus the metric on a specific species (e.g. for drill-down cards).
+  - `device_id` — optional; focus the metric on a specific device/stream.
+- **Response 200:**
+
+```json
+{
+  "generated_at": "2024-04-08T10:15:00Z",
+  "metric": "detections_total",
+  "primary_window": {
+    "start": "2024-04-07T10:15:00Z",
+    "end": "2024-04-08T10:15:00Z",
+    "value": 1245
+  },
+  "comparison_window": {
+    "start": "2024-04-06T10:15:00Z",
+    "end": "2024-04-07T10:15:00Z",
+    "value": 1106,
+    "selector": "prior_range"
+  },
+  "absolute_change": 139,
+  "percent_change": 12.57
+}
+```
+
+When the comparison baseline is zero the service returns `percent_change: null` to avoid division errors.
+
+---
+
 ## Quarter Presets
 
 - **Method / Path:** `GET /detections/quarters`
