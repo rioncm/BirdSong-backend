@@ -172,6 +172,54 @@ def _status_to_error_code(status_code: int) -> str:
     return _ERROR_CODE_MAP.get(status_code, f"http_{status_code}")
 
 
+def _validate_audio_file(file_path: Path) -> Tuple[bool, Optional[str]]:
+    """
+    Validate that an audio file can be read.
+    Returns (is_valid, error_message).
+    """
+    import subprocess
+    
+    if not file_path.exists():
+        return False, "File does not exist"
+    
+    if file_path.stat().st_size == 0:
+        return False, "File is empty (0 bytes)"
+    
+    # Use ffprobe to validate the audio file
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(file_path)
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        if result.returncode != 0:
+            error_output = result.stderr.strip() if result.stderr else "Unknown error"
+            return False, f"Invalid audio format: {error_output}"
+        
+        # Check if we got a valid duration
+        try:
+            duration = float(result.stdout.strip())
+            if duration <= 0:
+                return False, "Audio file has zero duration"
+        except (ValueError, AttributeError):
+            return False, "Could not determine audio duration"
+            
+        return True, None
+        
+    except subprocess.TimeoutExpired:
+        return False, "Audio validation timed out"
+    except Exception as e:
+        return False, f"Validation error: {str(e)}"
+
+
 def _build_error_payload(status_code: int, detail: Any) -> Dict[str, Any]:
     code = _status_to_error_code(status_code)
     message: Optional[str] = None
@@ -719,11 +767,31 @@ def _process_microphone_audio_sync(
             stream_id=microphone.microphone_id,
         )
     except Exception as exc:  # noqa: BLE001 - best-effort processing
-        logger.exception(
-            "Analysis failed for microphone '%s': %s",
-            microphone.microphone_id,
-            exc,
-        )
+        # Get file info for debugging
+        file_exists = destination_path.exists()
+        file_size = destination_path.stat().st_size if file_exists else 0
+        
+        # Check if it's an audio format error
+        error_msg = str(exc)
+        if "AudioFormatError" in type(exc).__name__ or "audio read error" in error_msg.lower():
+            logger.error(
+                "Audio format error for microphone '%s': %s. File: %s, Size: %d bytes, Exists: %s. "
+                "This may indicate a corrupted upload, unsupported format, or missing codec.",
+                microphone.microphone_id,
+                exc,
+                destination_path,
+                file_size,
+                file_exists,
+            )
+        else:
+            logger.exception(
+                "Analysis failed for microphone '%s': %s. File: %s, Size: %d bytes, Exists: %s",
+                microphone.microphone_id,
+                exc,
+                destination_path,
+                file_size,
+                file_exists,
+            )
         return
 
     debug_logger.debug(
@@ -924,6 +992,46 @@ async def ingest_microphone_audio(
 
     destination_path.write_bytes(file_bytes)
     await wav.close()
+    
+    # Validate file was written successfully
+    if not destination_path.exists():
+        logger.error("File write failed - file does not exist: %s", destination_path)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save audio file"
+        )
+    
+    actual_size = destination_path.stat().st_size
+    if actual_size == 0:
+        logger.error("File write failed - zero bytes: %s", destination_path)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Audio file is empty"
+        )
+    
+    if actual_size != len(file_bytes):
+        logger.warning(
+            "File size mismatch - uploaded: %d, written: %d, path: %s",
+            len(file_bytes),
+            actual_size,
+            destination_path
+        )
+    
+    # Validate audio file format before processing
+    is_valid, error_msg = _validate_audio_file(destination_path)
+    if not is_valid:
+        logger.error(
+            "Invalid audio file uploaded by microphone '%s': %s. File: %s, Size: %d",
+            microphone.microphone_id,
+            error_msg,
+            destination_path,
+            actual_size
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid audio file: {error_msg}"
+        )
+    
     debug_logger.debug(
         "ears.file_stored",
         extra={
