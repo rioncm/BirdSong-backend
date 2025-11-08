@@ -352,6 +352,8 @@ def _combine_datetime(row: Dict[str, Any]) -> Optional[datetime]:
     row_time = row.get("time")
     if row_date is None and row_time is None:
         return None
+    if row_date is None:
+        return None
     if row_time is None:
         combined = datetime.combine(row_date, time_cls(0, 0))
     else:
@@ -670,7 +672,7 @@ def _ensure_state(
     return app_config, resources, analyzer, species_enricher, alert_engine
 
 
-@app.post("/ears")
+@app.post("/remote/upload", description="Ingest audio file from remote microphone")
 async def ingest_microphone_audio(
     request: Request,
     microphone_id_form: Optional[str] = Form(None, alias="id"),

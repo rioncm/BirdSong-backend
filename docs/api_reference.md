@@ -315,7 +315,7 @@ When the comparison baseline is zero the service returns `percent_change: null` 
 
 ## Microphone Upload
 
-- **Method / Path:** `POST /ears`
+- **Method / Path:** `POST /remote/upload`
 - **Description:** Receive a WAV clip from a remote microphone, authenticate, and trigger analysis/alerts.
 - **Headers:**
   - `X-API-Key` — must match the configured value for the microphone.
