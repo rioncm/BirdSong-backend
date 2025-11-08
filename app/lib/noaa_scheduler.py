@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import Optional
 
-from lib.clients.noaa import NoaaClient
+from lib.clients.noaa import NoaaClient, NoaaClientError
 from lib.config import AppConfig
 
 from .noaa import resolve_noaa_user_agent, update_daily_weather_from_config
@@ -75,11 +75,39 @@ class NoaaUpdateScheduler:
     def _run_sync_update(self) -> None:
         user_agent = resolve_noaa_user_agent(self._resources)
         logger.info("Running scheduled NOAA update")
-        with NoaaClient(user_agent=user_agent) as client:
-            update_daily_weather_from_config(
-                self._app_config,
-                client=client,
-                include_actuals=self._include_actuals,
-                user_agent=user_agent,
-            )
-        logger.info("NOAA update complete")
+        
+        max_retries = 3
+        retry_delay = 60  # seconds
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                with NoaaClient(user_agent=user_agent) as client:
+                    update_daily_weather_from_config(
+                        self._app_config,
+                        client=client,
+                        include_actuals=self._include_actuals,
+                        user_agent=user_agent,
+                    )
+                logger.info("NOAA update complete")
+                return
+            except NoaaClientError as exc:
+                if attempt < max_retries:
+                    logger.warning(
+                        "NOAA update failed (attempt %d/%d), retrying in %d seconds: %s",
+                        attempt,
+                        max_retries,
+                        retry_delay,
+                        str(exc),
+                    )
+                    import time
+                    time.sleep(retry_delay)
+                else:
+                    logger.error(
+                        "NOAA update failed after %d attempts: %s",
+                        max_retries,
+                        str(exc),
+                    )
+                    raise
+            except Exception as exc:
+                logger.exception("NOAA update failed with unexpected error")
+                raise

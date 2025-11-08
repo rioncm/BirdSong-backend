@@ -183,17 +183,47 @@ def _ensure_weather_site(
                 extra={
                     "site_key": site_key,
                     "force": force_refresh,
+                    "latitude": latitude,
+                    "longitude": longitude,
                 },
             )
-            point = client.get_point(
-                latitude,
-                longitude,
-                refresh=force_refresh or record is not None,
-            )
+            try:
+                point = client.get_point(
+                    latitude,
+                    longitude,
+                    refresh=force_refresh or record is not None,
+                )
+            except NoaaClientError as exc:
+                logger.error(
+                    "NOAA point lookup failed",
+                    extra={
+                        "latitude": latitude,
+                        "longitude": longitude,
+                        "error": str(exc),
+                    },
+                    exc_info=True,
+                )
+                raise
+            
             properties = point.get("properties") or {}
             grid_id = properties.get("gridId")
             grid_x = properties.get("gridX")
             grid_y = properties.get("gridY")
+            
+            # Log what we got back from NOAA
+            if grid_id is None or grid_x is None or grid_y is None:
+                logger.warning(
+                    "NOAA point response missing grid data",
+                    extra={
+                        "latitude": latitude,
+                        "longitude": longitude,
+                        "grid_id": grid_id,
+                        "grid_x": grid_x,
+                        "grid_y": grid_y,
+                        "properties_keys": list(properties.keys()),
+                    },
+                )
+            
             tz_name = (
                 timezone_hint
                 or properties.get("timeZone")
@@ -608,7 +638,11 @@ def update_daily_weather_from_config(
         if site.grid_id is None or site.grid_x is None or site.grid_y is None:
             logger.warning(
                 "NOAA site missing grid metadata; forcing refresh",
-                extra={"site_key": site.site_key},
+                extra={
+                    "site_key": site.site_key,
+                    "latitude": coordinates[0],
+                    "longitude": coordinates[1],
+                },
             )
             site = _ensure_weather_site(
                 client=client,
@@ -618,7 +652,16 @@ def update_daily_weather_from_config(
                 force_refresh=True,
             )
             if site.grid_id is None or site.grid_x is None or site.grid_y is None:
-                raise NoaaClientError("Unable to resolve NOAA grid metadata for configured coordinates.")
+                error_msg = (
+                    f"Unable to resolve NOAA grid metadata for coordinates "
+                    f"({coordinates[0]}, {coordinates[1]}). This may indicate: "
+                    f"1) NOAA API is temporarily unavailable, "
+                    f"2) Coordinates are outside NOAA coverage area (US only), "
+                    f"3) Network connectivity issues. "
+                    f"Grid data: id={site.grid_id}, x={site.grid_x}, y={site.grid_y}"
+                )
+                logger.error(error_msg)
+                raise NoaaClientError(error_msg)
         forecast = refresh_daily_forecast(
             client=client,
             site=site,

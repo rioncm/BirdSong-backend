@@ -15,3 +15,4 @@ httpx
 astral
 pytest
 beautifulsoup4
+resampy
