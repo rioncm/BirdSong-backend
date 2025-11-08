@@ -114,3 +114,6 @@ Notes for future development in no particular order
 - play, pause, restart, download buttons
 - Visual display of waveform like iNaturalist with start and stop indicators for each detection 
     - show detected species scientific name and common name with in the indicated section. 
+
+## Implement celery for analysis of audio
+Implement Celery and redis (if needed) to decouple the ingesting from the analysis completly and provide for a auto scalable analyzer. 

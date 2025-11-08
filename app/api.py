@@ -672,6 +672,185 @@ def _ensure_state(
     return app_config, resources, analyzer, species_enricher, alert_engine
 
 
+async def _process_microphone_audio_background(
+    analyzer: BaseAnalyzer,
+    species_enricher: SpeciesEnricher,
+    alert_engine: Optional[AlertEngine],
+    microphone: MicrophoneConfig,
+    destination_path: Path,
+    latitude: Optional[float],
+    longitude: Optional[float],
+    friendly_name: Optional[str],
+) -> None:
+    try:
+        await asyncio.to_thread(
+            _process_microphone_audio_sync,
+            analyzer,
+            species_enricher,
+            alert_engine,
+            microphone,
+            destination_path,
+            latitude,
+            longitude,
+            friendly_name,
+        )
+    except Exception:  # noqa: BLE001 - never bubble background failures to clients
+        logger.exception(
+            "Background ingest task crashed",
+            extra={"microphone_id": microphone.microphone_id, "path": str(destination_path)},
+        )
+
+
+def _process_microphone_audio_sync(
+    analyzer: BaseAnalyzer,
+    species_enricher: SpeciesEnricher,
+    alert_engine: Optional[AlertEngine],
+    microphone: MicrophoneConfig,
+    destination_path: Path,
+    latitude: Optional[float],
+    longitude: Optional[float],
+    friendly_name: Optional[str],
+) -> None:
+    try:
+        analysis = analyzer.analyze(
+            destination_path,
+            latitude=latitude,
+            longitude=longitude,
+            stream_id=microphone.microphone_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort processing
+        logger.exception(
+            "Analysis failed for microphone '%s': %s",
+            microphone.microphone_id,
+            exc,
+        )
+        return
+
+    debug_logger.debug(
+        "ears.analysis_complete",
+        extra={
+            "microphone_id": microphone.microphone_id,
+            "detections": len(analysis.detections),
+            "duration": analysis.duration_seconds,
+        },
+    )
+
+    unique_species = {}
+    for detection in analysis.detections:
+        scientific = (detection.scientific_name or "").strip()
+        if not scientific:
+            continue
+        key = scientific.lower()
+        if key not in unique_species:
+            unique_species[key] = detection
+
+    species_id_map: Dict[str, str] = {}
+    for detection in unique_species.values():
+        try:
+            result = species_enricher.ensure_species(
+                detection.scientific_name,
+                common_name=detection.common_name or detection.label,
+            )
+            if result.created:
+                logger.info(
+                    "Enriched species '%s' via GBIF/Wikimedia (species_id=%s)",
+                    detection.scientific_name or detection.common_name,
+                    result.species_id,
+                )
+            if detection.scientific_name:
+                species_id_map[detection.scientific_name.strip().lower()] = result.species_id
+        except SpeciesEnrichmentError as exc:
+            logger.warning(
+                "Species enrichment failed for '%s': %s",
+                detection.scientific_name or detection.common_name or "unknown",
+                exc,
+            )
+
+    if alert_engine is not None:
+        for detection in analysis.detections:
+            species_key = (detection.scientific_name or "").strip().lower()
+            alert_engine.process_detection(
+                {
+                    "scientific_name": detection.scientific_name,
+                    "common_name": detection.common_name,
+                    "species_id": species_id_map.get(species_key),
+                    "confidence": detection.confidence,
+                    "start_time": detection.start_time,
+                    "end_time": detection.end_time,
+                    "recording_path": str(destination_path),
+                    "location": microphone.location,
+                }
+            )
+        debug_logger.debug(
+            "ears.alerts_dispatched",
+            extra={
+                "microphone_id": microphone.microphone_id,
+                "detections": len(analysis.detections),
+            },
+        )
+
+    if not analysis.detections:
+        try:
+            destination_path.unlink(missing_ok=True)
+            debug_logger.debug(
+                "ears.cleanup_deleted",
+                extra={"microphone_id": microphone.microphone_id, "path": str(destination_path)},
+            )
+        except OSError as cleanup_exc:
+            debug_logger.warning(
+                "ears.cleanup_failed",
+                extra={
+                    "microphone_id": microphone.microphone_id,
+                    "path": str(destination_path),
+                    "error": str(cleanup_exc),
+                },
+            )
+
+    if analysis.detections:
+        try:
+            inserted = persist_analysis_results(
+                analysis,
+                analysis.detections,
+                source_id=microphone.microphone_id,
+                source_name=friendly_name
+                or microphone.display_name
+                or microphone.location
+                or microphone.microphone_id,
+                source_display_name=microphone.display_name or friendly_name or microphone.location,
+                source_location=microphone.location,
+                species_enricher=species_enricher,
+                species_id_map=species_id_map,
+            )
+            debug_logger.info(
+                "ears.persistence_complete",
+                extra={
+                    "microphone_id": microphone.microphone_id,
+                    "inserted": inserted,
+                    "path": str(destination_path),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - log and continue
+            logger.warning(
+                "Failed to persist detections for microphone '%s': %s",
+                microphone.microphone_id,
+                exc,
+            )
+            debug_logger.exception(
+                "ears.persistence_error",
+                extra={
+                    "microphone_id": microphone.microphone_id,
+                    "path": str(destination_path),
+                },
+            )
+
+
+def _log_ingest_task_result(task: asyncio.Task) -> None:
+    try:
+        task.result()
+    except Exception:
+        logger.exception("Background ingest task failed with unhandled exception")
+
+
 @app.post("/remote/upload", description="Ingest audio file from remote microphone")
 async def ingest_microphone_audio(
     request: Request,
@@ -757,163 +936,21 @@ async def ingest_microphone_audio(
     lat_value = _parse_optional_float(latitude, "latitude") or microphone.latitude
     lon_value = _parse_optional_float(longitude, "longitude") or microphone.longitude
 
-    try:
-        analysis = analyzer.analyze(
+    background_task = asyncio.create_task(
+        _process_microphone_audio_background(
+            analyzer,
+            species_enricher,
+            alert_engine,
+            microphone,
             destination_path,
-            latitude=lat_value,
-            longitude=lon_value,
-            stream_id=microphone.microphone_id,
+            lat_value,
+            lon_value,
+            name,
         )
-    except Exception as exc:  # noqa: BLE001 - return clean error to client
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Analysis failed: {exc}",
-        ) from exc
-    debug_logger.debug(
-        "ears.analysis_complete",
-        extra={
-            "microphone_id": microphone.microphone_id,
-            "detections": len(analysis.detections),
-            "duration": analysis.duration_seconds,
-        },
     )
+    background_task.add_done_callback(_log_ingest_task_result)
 
-    unique_species = {}
-    for detection in analysis.detections:
-        scientific = (detection.scientific_name or "").strip()
-        if not scientific:
-            continue
-        key = scientific.lower()
-        if key not in unique_species:
-            unique_species[key] = detection
-
-    species_id_map: Dict[str, str] = {}
-    for detection in unique_species.values():
-        try:
-            result = species_enricher.ensure_species(
-                detection.scientific_name,
-                common_name=detection.common_name or detection.label,
-            )
-            if result.created:
-                logger.info(
-                    "Enriched species '%s' via GBIF/Wikimedia (species_id=%s)",
-                    detection.scientific_name or detection.common_name,
-                    result.species_id,
-                )
-            if detection.scientific_name:
-                species_id_map[detection.scientific_name.strip().lower()] = result.species_id
-        except SpeciesEnrichmentError as exc:
-            logger.warning(
-                "Species enrichment failed for '%s': %s",
-                detection.scientific_name or detection.common_name or "unknown",
-                exc,
-            )
-
-    if alert_engine is not None:
-        for detection in analysis.detections:
-            species_key = (detection.scientific_name or "").strip().lower()
-            alert_engine.process_detection(
-                {
-                    "scientific_name": detection.scientific_name,
-                    "common_name": detection.common_name,
-                    "species_id": species_id_map.get(species_key),
-                    "confidence": detection.confidence,
-                    "start_time": detection.start_time,
-                    "end_time": detection.end_time,
-                    "recording_path": str(destination_path),
-                    "location": microphone.location,
-                }
-            )
-        debug_logger.debug(
-            "ears.alerts_dispatched",
-            extra={
-                "microphone_id": microphone.microphone_id,
-                "detections": len(analysis.detections),
-            },
-        )
-
-    detection_payload = [
-        {
-            "common_name": detection.common_name,
-            "scientific_name": detection.scientific_name,
-            "label": detection.label,
-            "confidence": detection.confidence,
-            "start_time": detection.start_time,
-            "end_time": detection.end_time,
-            "location_hint": (
-                "predicted"
-                if detection.is_predicted_for_location
-                else "unverified"
-                if detection.is_predicted_for_location is not None
-                else "unknown"
-            ),
-        }
-        for detection in analysis.detections
-    ]
-
-    stored_path: Optional[str] = str(destination_path)
-    if not analysis.detections:
-        try:
-            destination_path.unlink(missing_ok=True)
-            stored_path = None
-            debug_logger.debug(
-                "ears.cleanup_deleted",
-                extra={"microphone_id": microphone.microphone_id, "path": str(destination_path)},
-            )
-        except OSError as cleanup_exc:
-            debug_logger.warning(
-                "ears.cleanup_failed",
-                extra={
-                    "microphone_id": microphone.microphone_id,
-                    "path": str(destination_path),
-                    "error": str(cleanup_exc),
-                },
-            )
-
-    if analysis.detections:
-        try:
-            inserted = persist_analysis_results(
-                analysis,
-                analysis.detections,
-                source_id=microphone.microphone_id,
-                source_name=name or microphone.display_name or microphone.location or microphone.microphone_id,
-                source_display_name=microphone.display_name or name or microphone.location,
-                source_location=microphone.location,
-                species_enricher=species_enricher,
-                species_id_map=species_id_map,
-            )
-            debug_logger.info(
-                "ears.persistence_complete",
-                extra={
-                    "microphone_id": microphone.microphone_id,
-                    "inserted": inserted,
-                    "path": str(destination_path),
-                },
-            )
-        except Exception as exc:  # noqa: BLE001 - log and continue response
-            logger.warning(
-                "Failed to persist detections for microphone '%s': %s",
-                microphone.microphone_id,
-                exc,
-            )
-            debug_logger.exception(
-                "ears.persistence_error",
-                extra={
-                    "microphone_id": microphone.microphone_id,
-                    "path": str(destination_path),
-                },
-            )
-
-    return {
-        "microphone_id": microphone.microphone_id,
-        "name": name or microphone.location,
-        "stored_path": stored_path,
-        "analyzed_at": analysis.timestamp.astimezone().isoformat(),
-        "duration_seconds": analysis.duration_seconds,
-        "sample_rate": analysis.frame_rate,
-        "channels": analysis.channels,
-        "detections": detection_payload,
-    }
+    return JSONResponse({"status": "accepted"})
 
 
 @app.get("/detections", response_model=DetectionFeedResponse)
