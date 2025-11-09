@@ -115,5 +115,13 @@ Notes for future development in no particular order
 - Visual display of waveform like iNaturalist with start and stop indicators for each detection 
     - show detected species scientific name and common name with in the indicated section. 
 
-## Implement celery for analysis of audio
-Implement Celery and redis (if needed) to decouple the ingesting from the analysis completly and provide for a auto scalable analyzer. 
+## Implement Analyzer scalability
+See additional Doc.
+
+## Create setup routine
+Build a setup routine for the initial start
+- default basic config.yaml
+- administrative UI
+- Streams and Mics configuration
+
+## Correct default Lat & Lon
