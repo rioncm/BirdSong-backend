@@ -105,7 +105,7 @@ Notes for future development in no particular order
 - For initial startup a config.yaml should be used to read all initial settings into the database. 
 - Create 
 
-## Implement Postgre and MAriaDB options for database back end
+## Implement Postgre and MariaDB options for database back end
 
 - To allow for larger deployments create 
 

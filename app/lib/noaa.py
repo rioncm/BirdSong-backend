@@ -153,6 +153,7 @@ def _ensure_weather_site(
     longitude: float,
     timezone_hint: Optional[str] = None,
     force_refresh: bool = False,
+    require_station: bool = False,
 ) -> WeatherSite:
     site_key = _build_site_key(latitude, longitude)
     session = get_session()
@@ -166,7 +167,9 @@ def _ensure_weather_site(
         def _needs_refresh(entry: Optional[Dict[str, Any]]) -> bool:
             if entry is None:
                 return True
-            required_fields = ("grid_id", "grid_x", "grid_y", "station_id")
+            required_fields = ["grid_id", "grid_x", "grid_y"]
+            if require_station:
+                required_fields.append("station_id")
             for field in required_fields:
                 if entry.get(field) in (None, ""):
                     return True
@@ -234,7 +237,7 @@ def _ensure_weather_site(
             stations_url = properties.get("observationStations")
             station_id: Optional[str] = None
             station_name: Optional[str] = None
-            if isinstance(stations_url, str) and stations_url:
+            if require_station and isinstance(stations_url, str) and stations_url:
                 stations_payload = client.get_observation_stations(stations_url)
                 station_id, station_name = _pick_station(stations_payload)
 
@@ -298,6 +301,7 @@ def _ensure_weather_site(
         )
     finally:
         session.close()
+
 
 def _parse_forecast(
     forecast_payload: Dict[str, Any],
@@ -380,13 +384,42 @@ def refresh_daily_forecast(
     target_date: Optional[date] = None,
 ) -> ForecastResult:
     target = target_date or datetime.now().date()
-    if site.grid_id is None or site.grid_x is None or site.grid_y is None:
-        raise NoaaClientError("Weather site missing grid metadata; refresh required.")
 
     tz_name = site.timezone or "UTC"
     tz = ZoneInfo(tz_name)
 
-    forecast_payload = client.get_forecast(str(site.grid_id), int(site.grid_x), int(site.grid_y))
+    forecast_payload: Optional[Dict[str, Any]] = None
+    forecast_url: Optional[str] = None
+    try:
+        point_payload = client.get_point(site.latitude, site.longitude)
+        properties = point_payload.get("properties") or {}
+        url = properties.get("forecast")
+        if isinstance(url, str) and url:
+            forecast_url = url
+    except NoaaClientError as exc:
+        logger.info(
+            "NOAA point lookup failed prior to forecast fetch; falling back to cached grid metadata",
+            extra={
+                "error": str(exc),
+                "latitude": site.latitude,
+                "longitude": site.longitude,
+            },
+        )
+
+    if forecast_url:
+        try:
+            forecast_payload = client.get_forecast_by_url(forecast_url)
+        except NoaaClientError as exc:
+            logger.warning(
+                "NOAA forecast via points response failed; falling back to grid lookup (%s)",
+                exc,
+            )
+
+    if forecast_payload is None:
+        if site.grid_id is None or site.grid_x is None or site.grid_y is None:
+            raise NoaaClientError("Weather site missing grid metadata; refresh required.")
+        forecast_payload = client.get_forecast(str(site.grid_id), int(site.grid_x), int(site.grid_y))
+
     forecast_high, forecast_low, rain_probability, issued_at = _parse_forecast(
         forecast_payload,
         target,
@@ -634,6 +667,7 @@ def update_daily_weather_from_config(
             latitude=coordinates[0],
             longitude=coordinates[1],
             timezone_hint=timezone_hint,
+            require_station=include_actuals,
         )
         if site.grid_id is None or site.grid_x is None or site.grid_y is None:
             logger.warning(
@@ -650,6 +684,7 @@ def update_daily_weather_from_config(
                 longitude=coordinates[1],
                 timezone_hint=timezone_hint,
                 force_refresh=True,
+                require_station=include_actuals,
             )
             if site.grid_id is None or site.grid_x is None or site.grid_y is None:
                 error_msg = (

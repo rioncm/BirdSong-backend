@@ -35,7 +35,7 @@ def _default_headers(user_agent: Optional[str], token: Optional[str]) -> Dict[st
         "Accept": "application/ld+json",
         "User-Agent": user_agent
         or os.getenv("NOAA_USER_AGENT")
-        or "BirdSong/0.1 (+https://github.com/rion/BirdSong)",
+        or "BirdSong/0.1 (+https://github.com/rioncm/BirdSong)",
     }
     effective_token = token or os.getenv("NOAA_API_TOKEN")
     if effective_token:
@@ -177,6 +177,52 @@ class NoaaClient:
             base_delay=self._base_delay,
             logger=logger,
             description=f"NOAA forecast {grid_id} {grid_x},{grid_y}",
+            exceptions=(NoaaClientError,),
+        )
+
+    def get_forecast_by_url(self, forecast_url: str) -> Dict[str, Any]:
+        if not forecast_url:
+            raise NoaaClientError("forecast_url is required for direct forecast lookup")
+
+        def _call() -> Dict[str, Any]:
+            start = time.perf_counter()
+            response = self._client.get(forecast_url)
+            duration = time.perf_counter() - start
+            status = response.status_code
+            if status == 404:
+                raise NoaaClientError(
+                    f"NOAA forecast not found at {forecast_url}",
+                    retryable=False,
+                )
+            if status >= 500:
+                raise NoaaClientError(
+                    f"NOAA forecast error {status} at {forecast_url}",
+                    retryable=True,
+                )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:  # noqa: BLE001
+                raise NoaaClientError(
+                    f"NOAA forecast error {exc.response.status_code} at {forecast_url}",
+                    retryable=500 <= exc.response.status_code < 600,
+                ) from exc
+            logger.info(
+                "NOAA request success",
+                extra={
+                    "event": "noaa_request",
+                    "operation": "forecast_url",
+                    "status": status,
+                    "duration": duration,
+                },
+            )
+            return response.json()
+
+        return with_retry(
+            _call,
+            attempts=self._attempts,
+            base_delay=self._base_delay,
+            logger=logger,
+            description="NOAA forecast via url",
             exceptions=(NoaaClientError,),
         )
 

@@ -20,7 +20,7 @@ class NoaaUpdateScheduler:
         resources: dict,
         *,
         interval_hours: int = 6,
-        include_actuals: bool = True,
+        include_actuals: bool = False,
     ) -> None:
         self._app_config = app_config
         self._resources = resources

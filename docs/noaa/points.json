@@ -1,0 +1,94 @@
+{
+    "@context": [
+        "https://geojson.org/geojson-ld/geojson-context.jsonld",
+        {
+            "@version": "1.1",
+            "wx": "https://api.weather.gov/ontology#",
+            "s": "https://schema.org/",
+            "geo": "http://www.opengis.net/ont/geosparql#",
+            "unit": "http://codes.wmo.int/common/unit/",
+            "@vocab": "https://api.weather.gov/ontology#",
+            "geometry": {
+                "@id": "s:GeoCoordinates",
+                "@type": "geo:wktLiteral"
+            },
+            "city": "s:addressLocality",
+            "state": "s:addressRegion",
+            "distance": {
+                "@id": "s:Distance",
+                "@type": "s:QuantitativeValue"
+            },
+            "bearing": {
+                "@type": "s:QuantitativeValue"
+            },
+            "value": {
+                "@id": "s:value"
+            },
+            "unitCode": {
+                "@id": "s:unitCode",
+                "@type": "@id"
+            },
+            "forecastOffice": {
+                "@type": "@id"
+            },
+            "forecastGridData": {
+                "@type": "@id"
+            },
+            "publicZone": {
+                "@type": "@id"
+            },
+            "county": {
+                "@type": "@id"
+            }
+        }
+    ],
+    "id": "https://api.weather.gov/points/36.8107,-119.8351",
+    "type": "Feature",
+    "geometry": {
+        "type": "Point",
+        "coordinates": [
+            -119.8351,
+            36.8107
+        ]
+    },
+    "properties": {
+        "@id": "https://api.weather.gov/points/36.8107,-119.8351",
+        "@type": "wx:Point",
+        "cwa": "HNX",
+        "forecastOffice": "https://api.weather.gov/offices/HNX",
+        "gridId": "HNX",
+        "gridX": 51,
+        "gridY": 103,
+        "forecast": "https://api.weather.gov/gridpoints/HNX/51,103/forecast",
+        "forecastHourly": "https://api.weather.gov/gridpoints/HNX/51,103/forecast/hourly",
+        "forecastGridData": "https://api.weather.gov/gridpoints/HNX/51,103",
+        "observationStations": "https://api.weather.gov/gridpoints/HNX/51,103/stations",
+        "relativeLocation": {
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    -119.805153,
+                    36.79885
+                ]
+            },
+            "properties": {
+                "city": "Old Fig Garden",
+                "state": "CA",
+                "distance": {
+                    "unitCode": "wmoUnit:m",
+                    "value": 2974.0628013568
+                },
+                "bearing": {
+                    "unitCode": "wmoUnit:degree_(angle)",
+                    "value": 296
+                }
+            }
+        },
+        "forecastZone": "https://api.weather.gov/zones/forecast/CAZ307",
+        "county": "https://api.weather.gov/zones/county/CAC019",
+        "fireWeatherZone": "https://api.weather.gov/zones/fire/CAZ580",
+        "timeZone": "America/Los_Angeles",
+        "radarStation": "KHNX"
+    }
+}
