@@ -625,6 +625,17 @@ def _pick_primary_coordinates(config: AppConfig) -> Optional[Tuple[float, float]
 
 
 def resolve_noaa_user_agent(resources: Dict[str, object]) -> Optional[str]:
+    service = resources.get("settings_service")
+    if service is not None:
+        getter = getattr(service, "get", None)
+        if callable(getter):
+            try:
+                value = getter("integrations.noaa.user_agent")
+                if value:
+                    return str(value)
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to load NOAA user agent from settings", exc_info=True)
+
     user_agents = resources.get("data_source_user_agents") or {}
     if isinstance(user_agents, dict):
         user_agent = user_agents.get(NOAA_SOURCE_LABEL)

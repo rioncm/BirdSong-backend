@@ -18,6 +18,7 @@ from sqlalchemy import (
     Table,
     Text,
     Time,
+    UniqueConstraint,
 )
 
 
@@ -193,6 +194,150 @@ data_citations = Table(
 Index("ix_data_citations_source_id", data_citations.c.source_id)
 Index("ix_data_citations_species_id", data_citations.c.species_id)
 
+settings_categories = Table(
+    "settings_categories",
+    metadata,
+    Column("category_id", Integer, primary_key=True, autoincrement=True),
+    Column("name", String(128), nullable=False, unique=True),
+    Column("description", Text),
+    Column("created_at", DateTime, default=datetime.utcnow, nullable=False),
+    Column("updated_at", DateTime, default=datetime.utcnow, onupdate=datetime.utcnow),
+)
+
+settings_keys = Table(
+    "settings_keys",
+    metadata,
+    Column("setting_id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "category_id",
+        Integer,
+        ForeignKey("settings_categories.category_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("key", String(255), nullable=False, unique=True),
+    Column("label", String(255)),
+    Column("description", Text),
+    Column("data_type", String(32), nullable=False),
+    Column("default_value", Text),
+    Column("constraints", JSON, default={}),
+    Column("editable", Boolean, nullable=False, default=True),
+    Column("sensitive", Boolean, nullable=False, default=False),
+    Column("created_at", DateTime, default=datetime.utcnow, nullable=False),
+    Column("updated_at", DateTime, default=datetime.utcnow, onupdate=datetime.utcnow),
+)
+
+settings_values = Table(
+    "settings_values",
+    metadata,
+    Column("value_id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "setting_id",
+        Integer,
+        ForeignKey("settings_keys.setting_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("scope", String(64), nullable=False, default="global"),
+    Column("scope_ref", String(128)),
+    Column("value", Text, nullable=False),
+    Column("version", Integer, nullable=False, default=1),
+    Column("updated_at", DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False),
+    Column("updated_by", String(128)),
+    UniqueConstraint("setting_id", "scope", "scope_ref", name="uq_settings_values_scope"),
+)
+Index(
+    "ix_settings_values_setting_scope",
+    settings_values.c.setting_id,
+    settings_values.c.scope,
+    settings_values.c.scope_ref,
+)
+
+settings_audit = Table(
+    "settings_audit",
+    metadata,
+    Column("audit_id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "setting_id",
+        Integer,
+        ForeignKey("settings_keys.setting_id", ondelete="SET NULL"),
+    ),
+    Column("scope", String(64), nullable=False, default="global"),
+    Column("scope_ref", String(128)),
+    Column("previous_value", Text),
+    Column("new_value", Text),
+    Column("actor", String(128)),
+    Column("event", String(64)),
+    Column("created_at", DateTime, default=datetime.utcnow, nullable=False),
+)
+
+data_source_credentials = Table(
+    "data_source_credentials",
+    metadata,
+    Column("credential_id", Integer, primary_key=True, autoincrement=True),
+    Column("source_name", String(128), nullable=False, unique=True),
+    Column("api_key", Text),
+    Column("headers", JSON, default={}),
+    Column("expires_at", DateTime),
+    Column("updated_at", DateTime, default=datetime.utcnow, onupdate=datetime.utcnow),
+)
+
+bootstrap_state = Table(
+    "bootstrap_state",
+    metadata,
+    Column("state_key", String(128), primary_key=True),
+    Column("state_value", JSON, default={}),
+    Column("updated_at", DateTime, default=datetime.utcnow, onupdate=datetime.utcnow),
+)
+
+users = Table(
+    "users",
+    metadata,
+    Column("user_id", String(64), primary_key=True),
+    Column("email", String(255), nullable=False, unique=True),
+    Column("role", String(32), nullable=False, default="user"),
+    Column("password_hash", String(255)),
+    Column("is_active", Boolean, nullable=False, default=True),
+    Column("mfa_secret", String(255)),
+    Column("profile", JSON, default={}),
+    Column("created_at", DateTime, default=datetime.utcnow, nullable=False),
+    Column("updated_at", DateTime, default=datetime.utcnow, onupdate=datetime.utcnow),
+    Column("last_login_at", DateTime),
+)
+
+social_accounts = Table(
+    "social_accounts",
+    metadata,
+    Column("account_id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "user_id",
+        String(64),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("provider", String(64), nullable=False),
+    Column("provider_user_id", String(255), nullable=False),
+    Column("access_token", Text),
+    Column("refresh_token", Text),
+    Column("expires_at", DateTime),
+    Column("created_at", DateTime, default=datetime.utcnow, nullable=False),
+    UniqueConstraint("provider", "provider_user_id", name="uq_social_provider_user"),
+)
+
+user_preferences = Table(
+    "user_preferences",
+    metadata,
+    Column("preference_id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "user_id",
+        String(64),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("key", String(128), nullable=False),
+    Column("value", JSON, nullable=False),
+    Column("updated_at", DateTime, default=datetime.utcnow, onupdate=datetime.utcnow),
+    UniqueConstraint("user_id", "key", name="uq_user_preferences"),
+)
+
 
 TABLES = {
     "days": days,
@@ -202,4 +347,13 @@ TABLES = {
     "idents": idents,
     "data_sources": data_sources,
     "data_citations": data_citations,
+    "settings_categories": settings_categories,
+    "settings_keys": settings_keys,
+    "settings_values": settings_values,
+    "settings_audit": settings_audit,
+    "data_source_credentials": data_source_credentials,
+    "bootstrap_state": bootstrap_state,
+    "users": users,
+    "social_accounts": social_accounts,
+    "user_preferences": user_preferences,
 }

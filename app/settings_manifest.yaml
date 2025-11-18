@@ -1,0 +1,42 @@
+categories:
+  - name: system
+    description: Core operational settings
+    settings:
+      - key: system.default_timezone
+        label: Default Timezone
+        description: IANA timezone identifier applied when none is provided.
+        data_type: string
+        default: America/Los_Angeles
+      - key: system.redis.url
+        label: Redis URL
+        description: Connection string for the shared settings cache.
+        data_type: string
+        default: redis://localhost:6379/0
+        editable: true
+  - name: alerts
+    description: Alerting thresholds and feature flags
+    settings:
+      - key: alerts.rare_species.enabled
+        label: Rare Species Alerts
+        data_type: bool
+        default: true
+      - key: alerts.rare_species.threshold
+        label: Alert Confidence Threshold
+        data_type: float
+        default: 0.85
+        constraints:
+          min: 0
+          max: 1
+  - name: integrations
+    description: Third-party integrations (keys, URLs)
+    settings:
+      - key: integrations.noaa.user_agent
+        label: NOAA User Agent
+        data_type: string
+        default: BirdSong/1.0 (contact@example.com)
+        sensitive: false
+      - key: integrations.ebird.api_key
+        label: eBird API Key
+        data_type: secret
+        editable: true
+        sensitive: true

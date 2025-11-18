@@ -16,3 +16,5 @@ astral
 pytest
 beautifulsoup4
 resampy
+pyjwt
+redis

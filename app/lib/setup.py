@@ -3,13 +3,25 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+import logging
+import os
 
 from sqlalchemy import insert, select, update, inspect, text
 from sqlalchemy.engine import Engine
 
 from lib.config import AppConfig
-from lib.data.db import initialize_database
+from lib.data.db import get_session, initialize_database
 from lib.data.tables import data_sources
+from lib.settings import (
+    SettingsCache,
+    SettingsCacheConfig,
+    SettingsService,
+    apply_settings_manifest,
+    load_settings_manifest,
+)
+
+
+logger = logging.getLogger("birdsong.setup")
 
 
 _ALLOWED_SOURCE_TYPES = {"image", "taxa", "copy", "ai", "weather"}
@@ -248,6 +260,13 @@ def initialize_environment(
         if key.endswith("path") or key.endswith("_path"):
             resolved.mkdir(parents=True, exist_ok=True)
     notifications_config = config_data.get("notifications") or {}
+    redis_section = birdsong_section.get("redis") or {}
+    redis_url = (
+        redis_section.get("url")
+        or os.getenv("BIRDSONG_REDIS_URL")
+        or "redis://localhost:6379/0"
+    )
+    redis_ttl = int(redis_section.get("cache_ttl", 300)) if redis_section else 300
 
     database_section = dict(birdsong_section.get("database") or {})
     if not database_section:
@@ -486,6 +505,30 @@ def initialize_environment(
     engine = initialize_database(app_config.birdsong.database)
     _sync_data_sources(engine, data_source_entries)
 
+    manifest_path = base_dir_path / "settings_manifest.yaml"
+    if manifest_path.exists():
+        session = get_session()
+        try:
+            definitions = load_settings_manifest(manifest_path)
+            if definitions:
+                apply_settings_manifest(session, definitions)
+                session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    settings_cache = None
+    if redis_url:
+        try:
+            cache_config = SettingsCacheConfig(url=redis_url, ttl_seconds=redis_ttl)
+            settings_cache = SettingsCache(cache_config)
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to initialize Redis cache; proceeding without it", exc_info=True)
+
+    settings_service = SettingsService(get_session, cache=settings_cache)
+
     resources = {
         "database_dir": database_dir_path,
         "database_file": database_dir_path / database_name,
@@ -502,6 +545,9 @@ def initialize_environment(
         "alerts_config": alerts_config,
         "storage_paths": storage_paths,
         "notifications_config": notifications_config,
+        "redis": {"url": redis_url, "cache_ttl": redis_ttl},
+        "settings_service": settings_service,
+        "settings_cache": settings_cache,
     }
 
     return app_config, resources

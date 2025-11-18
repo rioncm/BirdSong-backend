@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import yaml
 from fastapi import (
+    APIRouter,
+    Depends,
     FastAPI,
     File,
     Form,
@@ -51,6 +53,7 @@ from lib.logging_utils import setup_debug_logging
 from lib.persistence import persist_analysis_results
 from lib.setup import initialize_environment
 from lib.noaa_scheduler import NoaaUpdateScheduler
+from lib.settings import SettingsCacheRefresher
 from lib.schemas import (
     CitationEntry,
     DataComparisonResponse,
@@ -74,7 +77,9 @@ from lib.schemas import (
     StatsWindow,
     TaxonomyDetail,
 )
+from lib.schemas.settings import CacheClearResponse, SettingValueResponse, UpdateSettingRequest
 from lib.stats import TimeWindow, fetch_data_comparison, fetch_overview_stats, resolve_time_window
+from .routes import settings as settings_routes
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -93,6 +98,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 logger = logging.getLogger("birdsong.api")
+
+app.include_router(settings_routes.router)
 
 
 _ERROR_CODE_MAP = {
@@ -666,6 +673,17 @@ async def startup_event() -> None:
     noaa_scheduler = NoaaUpdateScheduler(app_config, resources)
     noaa_scheduler.start()
 
+    settings_refresher: Optional[SettingsCacheRefresher] = None
+    settings_service = resources.get("settings_service")
+    settings_cache = resources.get("settings_cache")
+    if settings_service is not None and settings_cache is not None:
+        try:
+            refresh_interval = float(resources.get("redis", {}).get("cache_ttl", 300))
+        except Exception:  # noqa: BLE001
+            refresh_interval = 300.0
+        settings_refresher = SettingsCacheRefresher(settings_service, interval_seconds=refresh_interval)
+        settings_refresher.start()
+
     def _publish_alert(event: AlertEvent) -> None:
         logger.info("Alert emitted", extra={"alert": event.to_dict()})
         if notification_service:
@@ -681,6 +699,7 @@ async def startup_event() -> None:
     app.state.notification_service = notification_service
     app.state.summary_scheduler = scheduler
     app.state.noaa_scheduler = noaa_scheduler
+    app.state.settings_refresher = settings_refresher
 
 
 @app.on_event("shutdown")
@@ -698,6 +717,9 @@ async def shutdown_event() -> None:
     noaa_scheduler: NoaaUpdateScheduler | None = getattr(app.state, "noaa_scheduler", None)
     if noaa_scheduler is not None:
         await noaa_scheduler.stop()
+    settings_refresher: SettingsCacheRefresher | None = getattr(app.state, "settings_refresher", None)
+    if settings_refresher is not None:
+        settings_refresher.stop()
 
 
 def _ensure_state(

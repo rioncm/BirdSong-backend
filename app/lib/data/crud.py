@@ -8,7 +8,9 @@ from sqlalchemy import and_, func, insert, select, update, or_
 from sqlalchemy.orm import Session
 
 from .tables import (
+    bootstrap_state,
     data_citations,
+    data_source_credentials,
     data_sources,
     days,
     idents,
@@ -68,6 +70,24 @@ def get_data_source_id(session: Session, name: str) -> Optional[int]:
         select(data_sources.c.id).where(data_sources.c.name == name)
     ).scalar_one_or_none()
     return int(result) if result is not None else None
+
+
+def get_data_source(session: Session, name: str) -> Optional[Dict[str, Any]]:
+    row = (
+        session.execute(select(data_sources).where(data_sources.c.name == name))
+        .mappings()
+        .first()
+    )
+    return dict(row) if row is not None else None
+
+
+def list_data_sources(session: Session) -> List[Dict[str, Any]]:
+    rows = (
+        session.execute(select(data_sources).order_by(data_sources.c.name.asc()))
+        .mappings()
+        .all()
+    )
+    return [dict(row) for row in rows]
 
 
 def upsert_data_citation(
@@ -447,3 +467,49 @@ def list_days_missing_actuals(
         .limit(limit)
     ).scalars().all()
     return list(rows)
+
+
+def get_bootstrap_state(session: Session, key: str) -> Optional[Dict[str, Any]]:
+    row = (
+        session.execute(select(bootstrap_state).where(bootstrap_state.c.state_key == key))
+        .mappings()
+        .first()
+    )
+    return dict(row) if row is not None else None
+
+
+def upsert_bootstrap_state(session: Session, key: str, value: Dict[str, Any]) -> None:
+    session.execute(
+        insert(bootstrap_state)
+        .values(state_key=key, state_value=value)
+        .prefix_with("OR REPLACE")
+    )
+
+
+def upsert_data_source_credentials(
+    session: Session,
+    *,
+    source_name: str,
+    api_key: Optional[str],
+    headers: Optional[Dict[str, Any]] = None,
+    expires_at: Optional[datetime] = None,
+) -> None:
+    payload = {
+        "source_name": source_name,
+        "api_key": api_key,
+        "headers": headers,
+        "expires_at": expires_at,
+    }
+    existing = session.execute(
+        select(data_source_credentials.c.credential_id).where(
+            data_source_credentials.c.source_name == source_name
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        session.execute(
+            update(data_source_credentials)
+            .where(data_source_credentials.c.credential_id == existing)
+            .values({k: v for k, v in payload.items() if v is not None})
+        )
+    else:
+        session.execute(insert(data_source_credentials).values(payload))

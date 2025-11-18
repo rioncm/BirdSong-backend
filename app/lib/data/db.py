@@ -235,6 +235,24 @@ def _upgrade_0007_weather_sites(connection: Connection) -> None:
     )
 
 
+def _upgrade_0008_settings_schema(connection: Connection) -> None:
+    required_tables = [
+        "settings_categories",
+        "settings_keys",
+        "settings_values",
+        "settings_audit",
+        "data_source_credentials",
+        "bootstrap_state",
+        "users",
+        "social_accounts",
+        "user_preferences",
+    ]
+    for table_name in required_tables:
+        table = metadata.tables.get(table_name)
+        if table is not None:
+            table.create(connection, checkfirst=True)
+
+
 # Register migrations at import time.
 register_migration("0001_initial", _initial_schema)
 register_migration("0002_days_metadata", _upgrade_0002_days_metadata)
@@ -243,3 +261,4 @@ register_migration("0004_species_summary", _upgrade_0004_species_summary)
 register_migration("0005_species_ebird_code", _upgrade_0005_species_ebird_code)
 register_migration("0006_recordings_duration", _upgrade_0006_recordings_duration)
 register_migration("0007_weather_sites", _upgrade_0007_weather_sites)
+register_migration("0008_settings_schema", _upgrade_0008_settings_schema)
