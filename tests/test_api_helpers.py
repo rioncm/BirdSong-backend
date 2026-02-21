@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from starlette.routing import NoMatchFound
-
 from app.api import (
     _build_quarter_windows,
+    _build_recording_meta_url,
+    _format_datetime,
     _floor_to_bucket,
     _resolve_device_metadata,
     _group_detections_into_buckets,
@@ -18,7 +18,15 @@ from app.lib.schemas import DetectionItem
 
 class _DummyRequest:
     def url_for(self, _name: str, **_kwargs):  # noqa: D401 - simple stub
-        raise NoMatchFound()
+        wav_id = _kwargs.get("wav_id", "unknown")
+        if _name == "get_recording_metadata":
+            return f"http://testserver/recordings/{wav_id}/meta"
+        return f"http://testserver/recordings/{wav_id}"
+
+
+def test_format_datetime_returns_utc_isoformat() -> None:
+    value = datetime(2024, 10, 21, 8, 15, 0, tzinfo=timezone(timedelta(hours=-7)))
+    assert _format_datetime(value) == "2024-10-21T15:15:00Z"
 
 
 def test_floor_to_bucket_rounds_down_to_interval():
@@ -137,6 +145,12 @@ def test_grouping_collapses_species_entries(tmp_path: Path):
     aggregated: DetectionItem = bucket["detections"][0]
     assert aggregated.detection_count == 2
     assert aggregated.device_display_name == "Whobox Camera"
+    assert aggregated.recording.meta_url == "http://testserver/recordings/wav-2/meta"
+
+
+def test_build_recording_meta_url_includes_suffix() -> None:
+    request = _DummyRequest()
+    assert _build_recording_meta_url(request, "abc123") == "http://testserver/recordings/abc123/meta"
 
 
 @pytest.mark.parametrize(

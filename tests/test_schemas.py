@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.schemas import (
+from app.lib.schemas import (
     CitationEntry,
     DayActuals,
     DayForecast,
