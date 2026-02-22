@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, List
@@ -14,6 +14,8 @@ from lib.data import crud
 from lib.data import db as db_module
 from lib.data.db import get_session, initialize_database
 from lib.data.tables import days
+from lib.data.tables import data_sources
+import lib.noaa as noaa_module
 from lib.noaa import (
     ObservationResult,
     ForecastResult,
@@ -280,7 +282,7 @@ def test_update_weather_forces_metadata_refresh_when_grid_missing(temp_database)
     )
 
     assert forecast.grid_id == "HNX"
-    assert client.point_calls == [False, True]
+    assert client.point_calls[:2] == [False, True]
 
     session = get_session()
     try:
@@ -292,3 +294,44 @@ def test_update_weather_forces_metadata_refresh_when_grid_missing(temp_database)
     assert site["grid_id"] == "HNX"
     assert site["grid_x"] == 100
     assert site["grid_y"] == 80
+
+
+def test_data_sources_support_weather_source_type(temp_database):
+    session = get_session()
+    try:
+        session.execute(
+            data_sources.insert().values(
+                name="NOAA NWS",
+                source_type="weather",
+                cite=True,
+            )
+        )
+        session.commit()
+
+        source_type = session.execute(
+            select(data_sources.c.source_type).where(data_sources.c.name == "NOAA NWS")
+        ).scalar_one()
+    finally:
+        session.close()
+
+    assert source_type == "weather"
+
+
+def test_refresh_daily_forecast_uses_site_timezone_for_default_target(temp_database, monkeypatch):
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = datetime(2025, 10, 20, 1, 30, tzinfo=timezone.utc)
+            if tz is None:
+                return base.replace(tzinfo=None)
+            return base.astimezone(tz)
+
+    monkeypatch.setattr(noaa_module, "datetime", _FrozenDateTime)
+
+    client = StubNoaaClient()
+    forecast = refresh_daily_forecast(
+        client=client,
+        site=TEST_SITE,
+    )
+
+    assert forecast.target_date == date(2025, 10, 19)

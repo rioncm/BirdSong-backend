@@ -29,6 +29,7 @@ source_type_enum = Enum(
     "taxa",
     "copy",
     "ai",
+    "weather",
     name="source_type_enum",
 )
 
@@ -37,6 +38,7 @@ data_type_enum = Enum(
     "taxa",
     "copy",
     "ai",
+    "weather",
     name="data_type_enum",
 )
 

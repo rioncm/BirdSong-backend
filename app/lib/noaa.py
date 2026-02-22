@@ -383,10 +383,9 @@ def refresh_daily_forecast(
     site: WeatherSite,
     target_date: Optional[date] = None,
 ) -> ForecastResult:
-    target = target_date or datetime.now().date()
-
     tz_name = site.timezone or "UTC"
     tz = ZoneInfo(tz_name)
+    target = target_date or datetime.now(tz).date()
 
     forecast_payload: Optional[Dict[str, Any]] = None
     forecast_url: Optional[str] = None

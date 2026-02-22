@@ -69,7 +69,8 @@ Most read endpoints are open. The `/ears` ingestion endpoint requires the `X-API
       "recording": {
         "wav_id": "20240112T071844Z_north-side",
         "path": "/Users/.../streams/north-side/20240112T071844Z.wav",
-        "url": "http://localhost:8000/recordings/20240112T071844Z_north-side"
+        "url": "http://localhost:8000/recordings/20240112T071844Z_north-side",
+        "meta_url": "http://localhost:8000/recordings/20240112T071844Z_north-side/meta"
       }
     }
   ]
@@ -310,6 +311,29 @@ When the comparison baseline is zero the service returns `percent_change: null` 
 - **Description:** Streams the WAV file associated with a detection.
 - **Path Parameters:** `wav_id` — identifier from detection payloads.
 - **Response 200:** Binary audio (`audio/wav`). Returns `404` if the path cannot be located on disk.
+
+---
+
+## Recording Metadata
+
+- **Method / Path:** `GET /recordings/{wav_id}/meta`
+- **Description:** Returns playback metadata for a recording (URL, duration, source labels).
+- **Path Parameters:** `wav_id` — identifier from detection payloads.
+- **Response 200:**
+
+```json
+{
+  "wav_id": "20240112T071844Z_north-side",
+  "path": "/Users/.../streams/north-side/20240112T071844Z.wav",
+  "url": "http://localhost:8000/recordings/20240112T071844Z_north-side",
+  "media_type": "audio/wav",
+  "duration_seconds": 30.0,
+  "source_id": "north-side",
+  "source_name": "north-side",
+  "source_display_name": "North Side",
+  "source_location": "Backyard"
+}
+```
 
 ---
 

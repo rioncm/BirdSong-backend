@@ -65,6 +65,7 @@ from lib.schemas import (
     QuarterPresetsResponse,
     QuarterWindow,
     RecordingPreview,
+    RecordingMetadataResponse,
     SpeciesDetections,
     SpeciesDetailResponse,
     SpeciesImage,
@@ -139,9 +140,7 @@ def _format_time(value: Optional[time_cls]) -> Optional[str]:
 def _format_datetime(value: Optional[datetime]) -> Optional[str]:
     if value is None:
         return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone().isoformat()
+    return _format_datetime_utc(value)
 
 
 def _format_datetime_utc(value: datetime) -> str:
@@ -216,8 +215,15 @@ def _validate_audio_file(file_path: Path) -> Tuple[bool, Optional[str]]:
         
     except subprocess.TimeoutExpired:
         return False, "Audio validation timed out"
-    except Exception as e:
-        return False, f"Validation error: {str(e)}"
+    except Exception as exc:
+        return False, f"Validation error: {str(exc)}"
+
+
+def _delete_file_best_effort(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Failed to delete temporary file: %s", path, exc_info=True)
 
 
 def _build_error_payload(status_code: int, detail: Any) -> Dict[str, Any]:
@@ -395,6 +401,15 @@ def _build_recording_url(request: Request, wav_id: Optional[str]) -> Optional[st
         return None
 
 
+def _build_recording_meta_url(request: Request, wav_id: Optional[str]) -> Optional[str]:
+    if not wav_id:
+        return None
+    try:
+        return str(request.url_for("get_recording_metadata", wav_id=wav_id))
+    except NoMatchFound:
+        return None
+
+
 def _combine_datetime(row: Dict[str, Any]) -> Optional[datetime]:
     row_date = row.get("date")
     row_time = row.get("time")
@@ -447,6 +462,7 @@ def _build_detection_item(
         wav_id=row["wav_id"],
         path=row["recording_path"],
         url=_build_recording_url(request, row["wav_id"]),
+        meta_url=_build_recording_meta_url(request, row["wav_id"]),
         duration_seconds=row.get("recording_duration_seconds"),
     )
 
@@ -984,42 +1000,65 @@ async def ingest_microphone_audio(
 
     destination_path = Path(destination_dir) / f"{timestamp}{extension}"
 
-    file_bytes = await wav.read()
-    if not file_bytes:
+    bytes_written = 0
+    try:
+        with destination_path.open("wb") as destination_file:
+            while True:
+                chunk = await wav.read(1024 * 1024)
+                if not chunk:
+                    break
+                destination_file.write(chunk)
+                bytes_written += len(chunk)
+    except OSError as exc:
+        logger.error(
+            "Failed to write uploaded file for microphone '%s' (%s): %s",
+            microphone.microphone_id,
+            destination_path,
+            exc,
+        )
+        _delete_file_best_effort(destination_path)
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save audio file",
+        ) from exc
+    finally:
+        await wav.close()
+
+    if bytes_written == 0:
+        _delete_file_best_effort(destination_path)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file is empty",
         )
 
-    destination_path.write_bytes(file_bytes)
-    await wav.close()
-    
-    # Validate file was written successfully
     if not destination_path.exists():
         logger.error("File write failed - file does not exist: %s", destination_path)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to save audio file"
+            detail="Failed to save audio file",
         )
-    
+
     actual_size = destination_path.stat().st_size
     if actual_size == 0:
+        _delete_file_best_effort(destination_path)
         logger.error("File write failed - zero bytes: %s", destination_path)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Audio file is empty"
+            detail="Audio file is empty",
         )
-    
-    if actual_size != len(file_bytes):
+
+    if actual_size != bytes_written:
         logger.warning(
-            "File size mismatch - uploaded: %d, written: %d, path: %s",
-            len(file_bytes),
+            "File size mismatch - streamed: %d, written: %d, path: %s",
+            bytes_written,
             actual_size,
-            destination_path
+            destination_path,
         )
-    
+
     # Validate audio file format before processing
     is_valid, error_msg = _validate_audio_file(destination_path)
     if not is_valid:
+        _delete_file_best_effort(destination_path)
         logger.error(
             "Invalid audio file uploaded by microphone '%s': %s. File: %s, Size: %d",
             microphone.microphone_id,
@@ -1037,7 +1076,7 @@ async def ingest_microphone_audio(
         extra={
             "microphone_id": microphone.microphone_id,
             "path": str(destination_path),
-            "bytes": len(file_bytes),
+            "bytes": bytes_written,
         },
     )
 
@@ -1075,9 +1114,23 @@ def list_detections(
     _, resources, *_ = _ensure_state(request)
     target_date = _parse_date_param(date, "date")
 
+    conditions = []
+    if target_date is not None:
+        conditions.append(idents.c.date == target_date)
+    if species_id:
+        conditions.append(species.c.id == species_id)
+    if min_confidence is not None:
+        conditions.append(idents.c.confidence >= min_confidence)
+
+    offset = (page - 1) * page_size
     session = get_session()
     try:
-        stmt = (
+        base_from_clause = (
+            idents.join(species, idents.c.species_id == species.c.id)
+            .join(recordings, idents.c.wav_id == recordings.c.wav_id, isouter=True)
+        )
+
+        data_stmt = (
             select(
                 idents.c.id,
                 idents.c.date,
@@ -1097,65 +1150,79 @@ def list_detections(
                 species.c.info_url,
                 species.c.summary,
                 recordings.c.path.label("recording_path"),
+                recordings.c.duration_seconds.label("recording_duration_seconds"),
                 recordings.c.source_id.label("recording_source_id"),
                 recordings.c.source_name.label("recording_source_name"),
                 recordings.c.source_display_name.label("recording_source_display_name"),
                 recordings.c.source_location.label("recording_source_location"),
             )
-            .join(species, idents.c.species_id == species.c.id)
-            .join(recordings, idents.c.wav_id == recordings.c.wav_id, isouter=True)
+            .select_from(base_from_clause)
         )
 
-        conditions = []
-        if target_date is not None:
-            conditions.append(idents.c.date == target_date)
-        if species_id:
-            conditions.append(species.c.id == species_id)
-        if min_confidence is not None:
-            conditions.append(idents.c.confidence >= min_confidence)
+        if conditions:
+            data_stmt = data_stmt.where(and_(*conditions))
+
+        data_stmt = (
+            data_stmt
+            .order_by(idents.c.date.desc(), idents.c.time.desc().nullslast())
+            .limit(page_size)
+            .offset(offset)
+        )
+        rows = session.execute(data_stmt).mappings().all()
+
+        total_stmt = select(func.count(idents.c.id)).select_from(
+            idents.join(species, idents.c.species_id == species.c.id)
+        )
+        unique_species_stmt = select(func.count(func.distinct(idents.c.species_id))).select_from(
+            idents.join(species, idents.c.species_id == species.c.id)
+        )
+        latest_detection_stmt = select(idents.c.date, idents.c.time).select_from(
+            idents.join(species, idents.c.species_id == species.c.id)
+        )
+        earliest_detection_stmt = select(idents.c.date, idents.c.time).select_from(
+            idents.join(species, idents.c.species_id == species.c.id)
+        )
 
         if conditions:
-            stmt = stmt.where(and_(*conditions))
+            condition_expr = and_(*conditions)
+            total_stmt = total_stmt.where(condition_expr)
+            unique_species_stmt = unique_species_stmt.where(condition_expr)
+            latest_detection_stmt = latest_detection_stmt.where(condition_expr)
+            earliest_detection_stmt = earliest_detection_stmt.where(condition_expr)
 
-        stmt = stmt.order_by(idents.c.date.desc(), idents.c.time.desc().nullslast())
+        total_detections = int(session.execute(total_stmt).scalar_one())
+        unique_species = int(session.execute(unique_species_stmt).scalar_one())
+        latest_detection_row = session.execute(
+            latest_detection_stmt.order_by(
+                idents.c.date.desc(),
+                idents.c.time.desc().nullslast(),
+            ).limit(1)
+        ).mappings().first()
+        earliest_detection_row = session.execute(
+            earliest_detection_stmt.order_by(
+                idents.c.date.asc(),
+                idents.c.time.asc().nullsfirst(),
+            ).limit(1)
+        ).mappings().first()
 
-        rows = session.execute(stmt).mappings().all()
-
-        species_ids = [
-            row["species_id"]
-            for row in rows
-            if row.get("species_id")
-        ]
+        species_ids = [row["species_id"] for row in rows if row.get("species_id")]
         image_attributions = _load_image_attributions(session, species_ids)
     finally:
         session.close()
 
-    total_detections = len(rows)
-    unique_species = len({row["species_id"] for row in rows if row.get("species_id")})
+    def _format_detection_time(row: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not row or row.get("date") is None:
+            return None
+        detection_time = row.get("time") or time_cls(0, 0)
+        return detection_time.strftime("%H:%M:%S")
 
-    detection_times: List[datetime] = []
-    for row in rows:
-        if row["date"] is not None:
-            if row["time"] is not None:
-                composite = datetime.combine(row["date"], row["time"])
-            else:
-                composite = datetime.combine(row["date"], time_cls(0, 0))
-            detection_times.append(composite)
-
-    first_detection = (
-        detection_times[-1].strftime("%H:%M:%S") if detection_times else None
-    )
-    last_detection = (
-        detection_times[0].strftime("%H:%M:%S") if detection_times else None
-    )
-
-    offset = (page - 1) * page_size
-    paged_rows = rows[offset : offset + page_size]
+    first_detection = _format_detection_time(earliest_detection_row)
+    last_detection = _format_detection_time(latest_detection_row)
 
     detection_models: List[DetectionItem] = []
     device_index = resources.get("device_index", []) if isinstance(resources, dict) else []
 
-    for row in paged_rows:
+    for row in rows:
         detection_item, _ = _build_detection_item(
             row,
             image_attributions,
@@ -1546,6 +1613,73 @@ def list_quarter_presets(
         date=target_date.isoformat(),
         current_label=current_label,
         quarters=quarters,
+    )
+
+
+@app.get(
+    "/recordings/{wav_id}/meta",
+    response_model=RecordingMetadataResponse,
+    name="get_recording_metadata",
+    summary="Return recording metadata and playback URL.",
+)
+def get_recording_metadata(request: Request, wav_id: str) -> RecordingMetadataResponse:
+    session = get_session()
+    try:
+        row = (
+            session.execute(
+                select(
+                    recordings.c.path,
+                    recordings.c.duration_seconds,
+                    recordings.c.source_id,
+                    recordings.c.source_name,
+                    recordings.c.source_display_name,
+                    recordings.c.source_location,
+                ).where(recordings.c.wav_id == wav_id)
+            )
+            .mappings()
+            .first()
+        )
+    finally:
+        session.close()
+
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recording not found",
+        )
+
+    raw_path = row["path"]
+    if not raw_path:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recording path unavailable",
+        )
+
+    file_path = Path(raw_path).expanduser()
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recording file not found on disk",
+        )
+
+    media_type, _ = mimetypes.guess_type(file_path.name)
+    playback_url = _build_recording_url(request, wav_id)
+    if not playback_url:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to build playback URL",
+        )
+
+    return RecordingMetadataResponse(
+        wav_id=wav_id,
+        path=str(file_path),
+        url=playback_url,
+        media_type=media_type or "audio/wav",
+        duration_seconds=row.get("duration_seconds"),
+        source_id=row.get("source_id"),
+        source_name=row.get("source_name"),
+        source_display_name=row.get("source_display_name"),
+        source_location=row.get("source_location"),
     )
 
 

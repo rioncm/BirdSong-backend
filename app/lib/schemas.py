@@ -35,6 +35,19 @@ class RecordingPreview(BaseModel):
     path: Optional[str] = None
     duration_seconds: Optional[float] = None
     url: Optional[str] = None
+    meta_url: Optional[str] = None
+
+
+class RecordingMetadataResponse(BaseModel):
+    wav_id: str
+    path: str
+    url: str
+    media_type: str
+    duration_seconds: Optional[float] = None
+    source_id: Optional[str] = None
+    source_name: Optional[str] = None
+    source_display_name: Optional[str] = None
+    source_location: Optional[str] = None
 
 
 class DetectionItem(BaseModel):
