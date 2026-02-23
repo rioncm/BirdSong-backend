@@ -32,6 +32,17 @@ cd /Users/rion/VSCode/BirdSong/backend
 python -m app.backfill_recordings_to_object_storage --delete-local
 ```
 
+## Reliability Options (recommended for busy SQLite instances)
+- Batch reads to avoid cursor-reset issues:
+```bash
+python -m app.backfill_recordings_to_object_storage --batch-size 100
+```
+- Retry DB updates when SQLite is locked:
+```bash
+python -m app.backfill_recordings_to_object_storage --max-retries 8 --retry-delay-ms 300
+```
+- If ingest is actively writing, pause ingest jobs during migration for fastest completion.
+
 ## What the migration updates
 - Reads rows from `recordings` where `path` is local (not `s3://`).
 - Uploads playback object to:
