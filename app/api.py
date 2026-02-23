@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import mimetypes
 import logging
+import subprocess
+import tempfile
 from collections import OrderedDict
 from datetime import date as date_cls, datetime, time as time_cls, timezone, timedelta
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlencode
 
 import yaml
 from fastapi import (
@@ -54,6 +57,7 @@ from lib.noaa_scheduler import NoaaUpdateScheduler
 from lib.object_storage import (
     RecordingStorageConfig,
     S3RecordingStore,
+    SUPPORTED_PLAYBACK_FORMATS,
     create_s3_recording_store,
     guess_media_type,
     is_s3_uri,
@@ -62,6 +66,8 @@ from lib.object_storage import (
 from lib.playback_proxy import (
     PlaybackServiceConfig,
     build_playback_service_url,
+    normalize_playback_filter,
+    normalize_playback_format,
 )
 from lib.schemas import (
     CitationEntry,
@@ -115,6 +121,17 @@ _ERROR_CODE_MAP = {
     status.HTTP_409_CONFLICT: "conflict",
     status.HTTP_422_UNPROCESSABLE_ENTITY: "validation_error",
     status.HTTP_500_INTERNAL_SERVER_ERROR: "server_error",
+}
+
+PLAYBACK_FILTERS: Dict[str, Optional[str]] = {
+    "none": None,
+    "enhanced": (
+        "highpass=f=140,"
+        "lowpass=f=9800,"
+        "afftdn=nf=-24,"
+        "acompressor=threshold=-20dB:ratio=2.2:attack=8:release=120,"
+        "alimiter=limit=0.95"
+    ),
 }
 
 
@@ -187,8 +204,6 @@ def _validate_audio_file(file_path: Path) -> Tuple[bool, Optional[str]]:
     Validate that an audio file can be read.
     Returns (is_valid, error_message).
     """
-    import subprocess
-    
     if not file_path.exists():
         return False, "File does not exist"
     
@@ -403,42 +418,110 @@ def _build_quarter_windows(target_date: date_cls) -> List[QuarterWindow]:
     return quarters
 
 
-def _build_recording_url(request: Request, wav_id: Optional[str]) -> Optional[str]:
-    if not wav_id:
-        return None
-
-    playback_service_config: Optional[PlaybackServiceConfig] = None
+def _resolve_playback_service_config(request: Request) -> PlaybackServiceConfig:
     app_obj = getattr(request, "app", None)
     app_state = getattr(app_obj, "state", None)
-    if app_state is not None:
-        candidate = getattr(app_state, "playback_service_config", None)
-        if isinstance(candidate, PlaybackServiceConfig):
-            playback_service_config = candidate
-        elif candidate is not None:
-            playback_service_config = PlaybackServiceConfig(
-                enabled=bool(getattr(candidate, "enabled", False)),
-                base_url=getattr(candidate, "base_url", None),
-                default_filter=str(getattr(candidate, "default_filter", "none")),
-                default_format=str(getattr(candidate, "default_format", "mp3")),
-            )
-    if playback_service_config:
-        delegated = build_playback_service_url(playback_service_config, wav_id)
-        if delegated:
-            return delegated
+    if app_state is None:
+        return PlaybackServiceConfig()
+
+    candidate = getattr(app_state, "playback_service_config", None)
+    if isinstance(candidate, PlaybackServiceConfig):
+        return candidate
+    if candidate is None:
+        return PlaybackServiceConfig()
+    return PlaybackServiceConfig(
+        enabled=bool(getattr(candidate, "enabled", False)),
+        base_url=getattr(candidate, "base_url", None),
+        default_filter=str(getattr(candidate, "default_filter", "none")),
+        default_format=str(getattr(candidate, "default_format", "mp3")),
+    )
+
+
+def _supported_media_type_for_format(output_format: str) -> str:
+    return SUPPORTED_PLAYBACK_FORMATS.get(output_format, "audio/mpeg")
+
+
+def _path_format(path_or_key: str) -> Optional[str]:
+    suffix = Path(path_or_key).suffix.lower().lstrip(".")
+    if suffix in SUPPORTED_PLAYBACK_FORMATS:
+        return suffix
+    guessed, _ = mimetypes.guess_type(path_or_key)
+    for fmt, media_type in SUPPORTED_PLAYBACK_FORMATS.items():
+        if guessed == media_type:
+            return fmt
+    return None
+
+
+def _build_playback_query_params(
+    *,
+    playback_filter: Optional[str] = None,
+    output_format: Optional[str] = None,
+) -> Dict[str, str]:
+    query: Dict[str, str] = {}
+    if playback_filter is not None:
+        normalized_filter = normalize_playback_filter(playback_filter)
+        if normalized_filter != "none":
+            query["filter"] = normalized_filter
+    if output_format is not None:
+        query["format"] = normalize_playback_format(output_format)
+    return query
+
+
+def _build_recording_url(
+    request: Request,
+    wav_id: Optional[str],
+    *,
+    playback_filter: Optional[str] = None,
+    output_format: Optional[str] = None,
+) -> Optional[str]:
+    if not wav_id:
+        return None
+
+    playback_service_config = _resolve_playback_service_config(request)
+    delegated = build_playback_service_url(
+        playback_service_config,
+        wav_id,
+        playback_filter=playback_filter,
+        output_format=output_format,
+    )
+    if delegated:
+        return delegated
 
     try:
-        return str(request.url_for("get_recording_file", wav_id=wav_id))
+        url = str(request.url_for("get_recording_file", wav_id=wav_id))
     except NoMatchFound:
         return None
 
+    query = _build_playback_query_params(
+        playback_filter=playback_filter,
+        output_format=output_format,
+    )
+    if query:
+        url = f"{url}?{urlencode(query)}"
+    return url
 
-def _build_recording_meta_url(request: Request, wav_id: Optional[str]) -> Optional[str]:
+
+def _build_recording_meta_url(
+    request: Request,
+    wav_id: Optional[str],
+    *,
+    playback_filter: Optional[str] = None,
+    output_format: Optional[str] = None,
+) -> Optional[str]:
     if not wav_id:
         return None
     try:
-        return str(request.url_for("get_recording_metadata", wav_id=wav_id))
+        url = str(request.url_for("get_recording_metadata", wav_id=wav_id))
     except NoMatchFound:
         return None
+
+    query = _build_playback_query_params(
+        playback_filter=playback_filter,
+        output_format=output_format,
+    )
+    if query:
+        url = f"{url}?{urlencode(query)}"
+    return url
 
 
 def _resolve_audio_media_type(path_or_key: str, fallback: str = "audio/wav") -> str:
@@ -483,6 +566,145 @@ def _stream_s3_audio(
     return StreamingResponse(_iter_chunks(), media_type=media_type, headers=headers)
 
 
+def _cleanup_temp(path: Optional[Path]) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Failed to delete temporary playback file %s", path, exc_info=True)
+
+
+def _materialize_s3_object(
+    storage: S3RecordingStore,
+    *,
+    bucket: str,
+    key: str,
+) -> Path:
+    response = storage.get_object(bucket, key)
+    body = response["Body"]
+    suffix = Path(key).suffix or ".audio"
+    temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    temp_path = Path(temp_file.name)
+    try:
+        with temp_file:
+            for chunk in body.iter_chunks(chunk_size=1024 * 1024):
+                if chunk:
+                    temp_file.write(chunk)
+    finally:
+        body.close()
+
+    if not temp_path.exists() or temp_path.stat().st_size == 0:
+        _cleanup_temp(temp_path)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recording content unavailable in object storage",
+        )
+    return temp_path
+
+
+def _build_ffmpeg_command(
+    source_path: Path,
+    *,
+    output_format: str,
+    playback_filter: str,
+) -> List[str]:
+    cmd: List[str] = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-i",
+        str(source_path),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "48000",
+    ]
+
+    filter_graph = PLAYBACK_FILTERS.get(playback_filter)
+    if filter_graph:
+        cmd.extend(["-af", filter_graph])
+
+    if output_format == "wav":
+        cmd.extend(["-codec:a", "pcm_s16le", "-f", "wav", "pipe:1"])
+    elif output_format == "ogg":
+        cmd.extend(["-codec:a", "libvorbis", "-qscale:a", "5", "-f", "ogg", "pipe:1"])
+    else:
+        cmd.extend(["-codec:a", "libmp3lame", "-q:a", "3", "-f", "mp3", "pipe:1"])
+
+    return cmd
+
+
+def _stream_transcoded_audio(
+    source_path: Path,
+    *,
+    output_format: str,
+    playback_filter: str,
+    cleanup_source: Optional[Path] = None,
+) -> StreamingResponse:
+    cmd = _build_ffmpeg_command(
+        source_path,
+        output_format=output_format,
+        playback_filter=playback_filter,
+    )
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if process.stdout is None or process.stderr is None:
+        _cleanup_temp(cleanup_source)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Playback transcode process failed to start",
+        )
+
+    first_chunk = process.stdout.read(1024 * 64)
+    if not first_chunk:
+        stderr = process.stderr.read().decode("utf-8", errors="ignore").strip()
+        return_code = process.wait()
+        _cleanup_temp(cleanup_source)
+        logger.warning(
+            "ffmpeg playback transcode failed (return_code=%s): %s",
+            return_code,
+            stderr,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Playback transcode failed",
+        )
+
+    def _iter_chunks():
+        try:
+            yield first_chunk
+            while True:
+                chunk = process.stdout.read(1024 * 64)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            try:
+                process.stdout.close()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                process.stderr.close()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            _cleanup_temp(cleanup_source)
+
+    headers = {"Cache-Control": "public, max-age=3600"}
+    media_type = _supported_media_type_for_format(output_format)
+    return StreamingResponse(_iter_chunks(), media_type=media_type, headers=headers)
+
+
 def _combine_datetime(row: Dict[str, Any]) -> Optional[datetime]:
     row_date = row.get("date")
     row_time = row.get("time")
@@ -502,6 +724,8 @@ def _build_detection_item(
     attribution_map: Dict[str, Dict[str, Optional[str]]],
     device_index: Sequence[Dict[str, Any]],
     request: Request,
+    playback_filter: Optional[str] = None,
+    output_format: Optional[str] = None,
 ) -> Tuple[DetectionItem, Optional[datetime]]:
     recorded_at_dt = _combine_datetime(row)
     recorded_at_value = recorded_at_dt.isoformat() if recorded_at_dt else None
@@ -534,8 +758,18 @@ def _build_detection_item(
     recording_preview = RecordingPreview(
         wav_id=row["wav_id"],
         path=row["recording_path"],
-        url=_build_recording_url(request, row["wav_id"]),
-        meta_url=_build_recording_meta_url(request, row["wav_id"]),
+        url=_build_recording_url(
+            request,
+            row["wav_id"],
+            playback_filter=playback_filter,
+            output_format=output_format,
+        ),
+        meta_url=_build_recording_meta_url(
+            request,
+            row["wav_id"],
+            playback_filter=playback_filter,
+            output_format=output_format,
+        ),
         duration_seconds=row.get("recording_duration_seconds"),
     )
 
@@ -575,6 +809,8 @@ def _group_detections_into_buckets(
     device_index: Sequence[Dict[str, Any]],
     request: Request,
     bucket_minutes: int,
+    playback_filter: Optional[str] = None,
+    output_format: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], List[datetime]]:
     bucket_map: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
     all_datetimes: List[datetime] = []
@@ -586,6 +822,8 @@ def _group_detections_into_buckets(
             attribution_map,
             device_index,
             request,
+            playback_filter=playback_filter,
+            output_format=output_format,
         )
         items_with_time.append((detected_at, detection_item))
         if detected_at is not None:
@@ -1234,6 +1472,14 @@ def list_detections(
     min_confidence: Optional[float] = Query(
         None, ge=0.0, le=1.0, description="Filter by minimum confidence (0-1 range)"
     ),
+    playback_filter: Optional[str] = Query(
+        None,
+        description="Optional playback filter to include in recording URLs (none or enhanced).",
+    ),
+    playback_format: Optional[str] = Query(
+        None,
+        description="Optional playback format to include in recording URLs (wav, mp3, ogg).",
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=200),
 ) -> DetectionFeedResponse:
@@ -1354,6 +1600,8 @@ def list_detections(
             image_attributions,
             device_index,
             request,
+            playback_filter=playback_filter,
+            output_format=playback_format,
         )
         detection_models.append(detection_item)
 
@@ -1401,6 +1649,14 @@ def timeline_detections(
         ge=1,
         le=120,
         description="Bucket size in minutes.",
+    ),
+    playback_filter: Optional[str] = Query(
+        None,
+        description="Optional playback filter to include in recording URLs (none or enhanced).",
+    ),
+    playback_format: Optional[str] = Query(
+        None,
+        description="Optional playback format to include in recording URLs (wav, mp3, ogg).",
     ),
 ) -> DetectionTimelineResponse:
     _, resources, *_ = _ensure_state(request)
@@ -1482,6 +1738,8 @@ def timeline_detections(
         device_index,
         request,
         bucket_minutes,
+        playback_filter=playback_filter,
+        output_format=playback_format,
     )
 
     has_more = len(buckets_raw) > limit
@@ -1748,7 +2006,20 @@ def list_quarter_presets(
     name="get_recording_metadata",
     summary="Return recording metadata and playback URL.",
 )
-def get_recording_metadata(request: Request, wav_id: str) -> RecordingMetadataResponse:
+def get_recording_metadata(
+    request: Request,
+    wav_id: str,
+    playback_filter: Optional[str] = Query(
+        None,
+        alias="filter",
+        description="Playback filter for generated URL (none or enhanced).",
+    ),
+    output_format: Optional[str] = Query(
+        None,
+        alias="format",
+        description="Playback output format for generated URL (wav, mp3, ogg).",
+    ),
+) -> RecordingMetadataResponse:
     session = get_session()
     try:
         row = (
@@ -1783,6 +2054,7 @@ def get_recording_metadata(request: Request, wav_id: str) -> RecordingMetadataRe
 
     media_type = _resolve_audio_media_type(raw_path)
     resolved_path = raw_path
+    source_format = _path_format(raw_path)
     if is_s3_uri(raw_path):
         recording_storage: Optional[S3RecordingStore] = getattr(
             request.app.state,
@@ -1798,6 +2070,7 @@ def get_recording_metadata(request: Request, wav_id: str) -> RecordingMetadataRe
             bucket, key = parse_s3_uri(raw_path)
             object_head = recording_storage.head_object(bucket, key)
             media_type = object_head.get("ContentType") or _resolve_audio_media_type(key)
+            source_format = _path_format(key)
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -1814,8 +2087,19 @@ def get_recording_metadata(request: Request, wav_id: str) -> RecordingMetadataRe
             )
         resolved_path = str(file_path)
         media_type = _resolve_audio_media_type(file_path.name)
+        source_format = _path_format(file_path.name)
 
-    playback_url = _build_recording_url(request, wav_id)
+    if output_format is not None:
+        media_type = _supported_media_type_for_format(normalize_playback_format(output_format))
+    elif source_format in SUPPORTED_PLAYBACK_FORMATS:
+        media_type = _supported_media_type_for_format(source_format)
+
+    playback_url = _build_recording_url(
+        request,
+        wav_id,
+        playback_filter=playback_filter,
+        output_format=output_format,
+    )
     if not playback_url:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1841,7 +2125,20 @@ def get_recording_metadata(request: Request, wav_id: str) -> RecordingMetadataRe
     summary="Download a stored recording by its identifier.",
     response_model=None,
 )
-def get_recording_file(request: Request, wav_id: str) -> StreamingResponse | FileResponse:
+def get_recording_file(
+    request: Request,
+    wav_id: str,
+    playback_filter: Optional[str] = Query(
+        None,
+        alias="filter",
+        description="Playback filter: none (default) or enhanced.",
+    ),
+    output_format: Optional[str] = Query(
+        None,
+        alias="format",
+        description="Output format: wav, mp3, or ogg.",
+    ),
+) -> StreamingResponse | FileResponse:
     session = get_session()
     try:
         row = (
@@ -1867,6 +2164,12 @@ def get_recording_file(request: Request, wav_id: str) -> StreamingResponse | Fil
             detail="Recording path unavailable",
         )
 
+    selected_filter = normalize_playback_filter(playback_filter or "none")
+    selected_format_override = (
+        normalize_playback_format(output_format) if output_format is not None else None
+    )
+    playback_config = _resolve_playback_service_config(request)
+
     if is_s3_uri(raw_path):
         recording_storage: Optional[S3RecordingStore] = getattr(
             request.app.state,
@@ -1887,17 +2190,50 @@ def get_recording_file(request: Request, wav_id: str) -> StreamingResponse | Fil
                 detail="Stored recording path is invalid",
             ) from exc
 
-        return _stream_s3_audio(recording_storage, bucket=bucket, key=key)
+        source_format = _path_format(key)
+        selected_format = (
+            selected_format_override
+            or source_format
+            or playback_config.normalized_format
+        )
+        if selected_filter == "none" and selected_format_override is None and source_format is None:
+            return _stream_s3_audio(recording_storage, bucket=bucket, key=key)
+        if selected_filter == "none" and source_format == selected_format:
+            return _stream_s3_audio(recording_storage, bucket=bucket, key=key)
+
+        source_path = _materialize_s3_object(recording_storage, bucket=bucket, key=key)
+        return _stream_transcoded_audio(
+            source_path,
+            output_format=selected_format,
+            playback_filter=selected_filter,
+            cleanup_source=source_path,
+        )
 
     file_path = Path(raw_path).expanduser()
-    if not file_path.exists():
+    if not file_path.exists() or not file_path.is_file():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Recording file not found on disk",
         )
 
-    media_type = _resolve_audio_media_type(file_path.name)
-    return FileResponse(file_path, media_type=media_type)
+    source_format = _path_format(file_path.name)
+    selected_format = (
+        selected_format_override
+        or source_format
+        or playback_config.normalized_format
+    )
+    if selected_filter == "none" and selected_format_override is None and source_format is None:
+        media_type = _resolve_audio_media_type(file_path.name)
+        return FileResponse(file_path, media_type=media_type)
+    if selected_filter == "none" and source_format == selected_format:
+        media_type = _supported_media_type_for_format(selected_format)
+        return FileResponse(file_path, media_type=media_type)
+
+    return _stream_transcoded_audio(
+        file_path,
+        output_format=selected_format,
+        playback_filter=selected_filter,
+    )
 
 
 @app.get(
