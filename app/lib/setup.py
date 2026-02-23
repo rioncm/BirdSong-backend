@@ -10,6 +10,7 @@ from sqlalchemy.engine import Engine
 from lib.config import AppConfig
 from lib.data.db import initialize_database
 from lib.data.tables import data_sources
+from lib.object_storage import build_recording_storage_config
 
 
 _ALLOWED_SOURCE_TYPES = {"image", "taxa", "copy", "ai", "weather"}
@@ -243,10 +244,13 @@ def initialize_environment(
     for key, value in storage_section.items():
         if value is None:
             continue
+        if not isinstance(value, (str, Path)):
+            continue
         resolved = _resolve_path(value, base_dir_path)
         storage_paths[key] = resolved
         if key.endswith("path") or key.endswith("_path"):
             resolved.mkdir(parents=True, exist_ok=True)
+    recording_storage_config = build_recording_storage_config(storage_section)
     notifications_config = config_data.get("notifications") or {}
 
     database_section = dict(birdsong_section.get("database") or {})
@@ -501,6 +505,7 @@ def initialize_environment(
         "data_source_user_agents": data_source_user_agents,
         "alerts_config": alerts_config,
         "storage_paths": storage_paths,
+        "recording_storage_config": recording_storage_config,
         "notifications_config": notifications_config,
     }
 

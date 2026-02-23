@@ -16,3 +16,4 @@ astral
 pytest
 beautifulsoup4
 resampy
+boto3

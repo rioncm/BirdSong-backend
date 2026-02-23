@@ -11,6 +11,13 @@ from lib.analyzer import AnalyzeResult, DetectionResult
 from lib.data import crud
 from lib.data.db import get_session
 from lib.enrichment import SpeciesEnricher, SpeciesEnrichmentError
+from lib.object_storage import (
+    RecordingStorageConfig,
+    S3RecordingStore,
+    SUPPORTED_PLAYBACK_FORMATS,
+    build_object_key,
+    transcode_audio_for_playback,
+)
 
 
 logger = logging.getLogger("birdsong.persistence")
@@ -27,6 +34,8 @@ def persist_analysis_results(
     source_display_name: Optional[str] = None,
     species_enricher: Optional[SpeciesEnricher] = None,
     species_id_map: Optional[Dict[str, str]] = None,
+    recording_storage: Optional[S3RecordingStore] = None,
+    recording_storage_config: Optional[RecordingStorageConfig] = None,
 ) -> int:
     """
     Store analyzer detections, guaranteeing related day and recording rows exist.
@@ -37,6 +46,13 @@ def persist_analysis_results(
 
     wav_path = Path(analysis.input_file)
     wav_id = wav_path.stem or wav_path.name
+    persisted_path = _prepare_recording_path(
+        wav_path=wav_path,
+        wav_id=wav_id,
+        source_id=source_id or analysis.stream_id,
+        recording_storage=recording_storage,
+        recording_storage_config=recording_storage_config,
+    )
 
     capture_dt = _determine_capture_datetime(analysis, wav_path)
     detection_date = capture_dt.date()
@@ -49,7 +65,7 @@ def persist_analysis_results(
         crud.ensure_recording(
             session,
             wav_id,
-            str(wav_path),
+            persisted_path,
             duration_seconds=analysis.duration_seconds,
             source_id=source_id or analysis.stream_id,
             source_name=source_name,
@@ -146,6 +162,84 @@ def persist_analysis_results(
         },
     )
     return inserted
+
+
+def _prepare_recording_path(
+    *,
+    wav_path: Path,
+    wav_id: str,
+    source_id: Optional[str],
+    recording_storage: Optional[S3RecordingStore],
+    recording_storage_config: Optional[RecordingStorageConfig],
+) -> str:
+    if (
+        recording_storage is None
+        or recording_storage_config is None
+        or not recording_storage_config.enabled
+    ):
+        return str(wav_path)
+
+    playback_format = recording_storage_config.normalized_playback_format
+    playback_content_type = SUPPORTED_PLAYBACK_FORMATS.get(playback_format)
+    source_segment = source_id or "unknown-source"
+    transcoded_path: Optional[Path] = None
+
+    try:
+        local_playback_path = wav_path
+        if playback_format != "wav":
+            local_playback_path = transcode_audio_for_playback(
+                wav_path,
+                output_format=playback_format,
+            )
+            transcoded_path = local_playback_path
+
+        playback_key = build_object_key(
+            recording_storage_config.prefix,
+            category="playback",
+            wav_id=wav_id,
+            source_id=source_segment,
+            extension=playback_format,
+        )
+        persisted_path = recording_storage.upload_file(
+            local_playback_path,
+            playback_key,
+            content_type=playback_content_type,
+        )
+
+        if recording_storage_config.keep_wav_copy and playback_format != "wav":
+            raw_key = build_object_key(
+                recording_storage_config.prefix,
+                category="raw",
+                wav_id=wav_id,
+                source_id=source_segment,
+                extension="wav",
+            )
+            recording_storage.upload_file(
+                wav_path,
+                raw_key,
+                content_type=SUPPORTED_PLAYBACK_FORMATS["wav"],
+            )
+
+        if recording_storage_config.delete_local_after_upload:
+            try:
+                wav_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Failed to delete local recording %s", wav_path, exc_info=True)
+
+        return persisted_path
+    except Exception:  # noqa: BLE001 - fallback to local path if storage/transcode fails
+        logger.exception("Failed to persist recording '%s' to object storage; keeping local path", wav_path)
+        return str(wav_path)
+    finally:
+        if transcoded_path is not None and transcoded_path != wav_path:
+            try:
+                transcoded_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(
+                    "Failed to remove temporary transcoded file %s",
+                    transcoded_path,
+                    exc_info=True,
+                )
 
 
 def _determine_capture_datetime(analysis: AnalyzeResult, wav_path: Path) -> datetime:

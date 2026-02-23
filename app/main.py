@@ -7,20 +7,24 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import yaml
-import os
 from lib.analyzer import BaseAnalyzer
 from lib.capture import AudioCapture
 from lib.clients import WikimediaClient
 from lib.clients.ebird import EbirdClient
+from lib.config_path import resolve_config_path
 from lib.enrichment import SpeciesEnricher
 from lib.logging_utils import setup_debug_logging
+from lib.object_storage import (
+    RecordingStorageConfig,
+    S3RecordingStore,
+    create_s3_recording_store,
+)
 from lib.persistence import persist_analysis_results
 from lib.setup import initialize_environment
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-_config_override = os.getenv("BIRDSONG_CONFIG")
-CONFIG_PATH = Path(_config_override) if _config_override else PROJECT_ROOT / "config.yaml"
+CONFIG_PATH = resolve_config_path(PROJECT_ROOT)
 DEBUG_LOGGER = setup_debug_logging(PROJECT_ROOT)
 
 
@@ -104,6 +108,27 @@ def run_capture_loop(
         log_path=PROJECT_ROOT / "logs" / "analyzer.log",
     )
     species_enricher = _build_species_enricher(resources)
+    recording_storage_config_raw = resources.get("recording_storage_config")
+    recording_storage_config = (
+        recording_storage_config_raw
+        if isinstance(recording_storage_config_raw, RecordingStorageConfig)
+        else RecordingStorageConfig()
+    )
+    recording_storage: Optional[S3RecordingStore] = None
+    if recording_storage_config.enabled:
+        try:
+            recording_storage = create_s3_recording_store(recording_storage_config)
+            DEBUG_LOGGER.info(
+                "capture_loop.recording_storage_enabled",
+                extra={
+                    "bucket": recording_storage_config.bucket,
+                    "endpoint": recording_storage_config.endpoint_url,
+                    "playback_format": recording_storage_config.normalized_playback_format,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            DEBUG_LOGGER.exception("capture_loop.recording_storage_init_failed: %s", exc)
+            recording_storage = None
     start_time = time.monotonic()
 
     while True:
@@ -158,6 +183,8 @@ def run_capture_loop(
                             source_display_name=stream_config.display_name,
                             source_location=stream_config.location,
                             species_enricher=species_enricher,
+                            recording_storage=recording_storage,
+                            recording_storage_config=recording_storage_config,
                         )
                         if inserted:
                             print(f"    Stored {inserted} detections.")
