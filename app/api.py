@@ -130,6 +130,7 @@ PLAYBACK_FILTERS: Dict[str, Optional[str]] = {
         "lowpass=f=9800,"
         "afftdn=nf=-24,"
         "acompressor=threshold=-20dB:ratio=2.2:attack=8:release=120,"
+        "volume=1.5,"
         "alimiter=limit=0.95"
     ),
 }
