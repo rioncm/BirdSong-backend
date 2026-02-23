@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import yaml
-import os
 from lib.analyzer import BaseAnalyzer
 from lib.capture import AudioCapture
 from lib.clients import WikimediaClient
 from lib.clients.ebird import EbirdClient
+from lib.config_path import resolve_config_path
 from lib.enrichment import SpeciesEnricher
 from lib.logging_utils import setup_debug_logging
 from lib.object_storage import (
@@ -24,8 +24,7 @@ from lib.setup import initialize_environment
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-_config_override = os.getenv("BIRDSONG_CONFIG")
-CONFIG_PATH = Path(_config_override) if _config_override else PROJECT_ROOT / "config.yaml"
+CONFIG_PATH = resolve_config_path(PROJECT_ROOT)
 DEBUG_LOGGER = setup_debug_logging(PROJECT_ROOT)
 
 

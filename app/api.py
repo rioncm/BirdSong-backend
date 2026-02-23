@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import mimetypes
 import logging
 from collections import OrderedDict
@@ -36,6 +35,7 @@ from lib.alerts import AlertEngine, AlertEvent
 from lib.notifications import NotificationService
 from lib.notifications.scheduler import SummaryScheduler
 from lib.config import AppConfig, MicrophoneConfig
+from lib.config_path import resolve_config_path
 from lib.data import crud
 from lib.data.db import get_session
 from lib.data.tables import (
@@ -87,8 +87,7 @@ from lib.stats import TimeWindow, fetch_data_comparison, fetch_overview_stats, r
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-_config_override = os.getenv("BIRDSONG_CONFIG")
-CONFIG_PATH = Path(_config_override) if _config_override else PROJECT_ROOT / "config.yaml"
+CONFIG_PATH = resolve_config_path(PROJECT_ROOT)
 API_KEY_HEADER = "X-API-Key"
 
 app = FastAPI(title="BirdSong Ingest API", version="1.0.0")

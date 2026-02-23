@@ -8,6 +8,7 @@ from typing import Dict, Iterable, Tuple
 import yaml
 from sqlalchemy import select
 
+from lib.config_path import resolve_config_path
 from lib.data.db import get_session
 from lib.data.tables import species
 from lib.setup import initialize_environment
@@ -38,8 +39,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=PROJECT_ROOT / "config.yaml",
-        help="Path to the birdsong configuration file (default: %(default)s)",
+        default=resolve_config_path(PROJECT_ROOT),
+        help="Path to the birdsong configuration file (default: env override, /etc mount, or backend/app/config.yaml)",
     )
     parser.add_argument(
         "--dry-run",

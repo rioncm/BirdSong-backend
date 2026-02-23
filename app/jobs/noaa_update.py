@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.clients.noaa import NoaaClient
+from lib.config_path import resolve_config_path
 from lib.noaa import resolve_noaa_user_agent, update_daily_weather_from_config
 from lib.setup import initialize_environment
 
@@ -76,9 +77,9 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--config",
-        default=Path(__file__).resolve().parents[1] / "config.yaml",
+        default=resolve_config_path(Path(__file__).resolve().parents[1]),
         type=Path,
-        help="Path to the BirdSong configuration file (default: backend/app/config.yaml)",
+        help="Path to BirdSong config (default: env override, /etc mount, or backend/app/config.yaml)",
     )
     parser.add_argument(
         "--date",
