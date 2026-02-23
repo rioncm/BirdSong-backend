@@ -24,6 +24,8 @@
 
 ## Operations & Configuration Snapshot
 - File storage roots at `data/` with dedicated `audio/`, `images/`, `temp/`, and per-stream directories; microphones are stored under `microphones/`.
+- Recording storage now supports S3-compatible object storage (MinIO/AWS S3). Storage and playback settings are env-driven (`BIRDSONG_S3_*`, `BIRDSONG_PLAYBACK_FORMAT`, etc.; see `backend/.env.example`).
+- Recommended playback format is MP3 for browser compatibility; optional raw WAV copies can be retained in object storage for archival/debug.
 - Streams are configured under `birdsong.streams` (e.g., `whobox`, `art-gate`, `north-side`, `south-side`) with RTSP URLs, human-friendly `display_name` labels, and location metadata; microphones inherit default lat/long with individual API keys.
 - The default ingest API key (`backyard-mic`) is `setophaga-coronata`; update via `config.yaml` before deployment.
 - External services (NOAA, BirdNET, GBIF, Wikimedia) and their user-agent headers are centralized in `birdsong.data_sources`, keeping secrets injectable via environment variables.

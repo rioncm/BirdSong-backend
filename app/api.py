@@ -24,7 +24,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.routing import NoMatchFound
 from sqlalchemy import and_, func, or_, select
 
@@ -51,6 +51,14 @@ from lib.logging_utils import setup_debug_logging
 from lib.persistence import persist_analysis_results
 from lib.setup import initialize_environment
 from lib.noaa_scheduler import NoaaUpdateScheduler
+from lib.object_storage import (
+    RecordingStorageConfig,
+    S3RecordingStore,
+    create_s3_recording_store,
+    guess_media_type,
+    is_s3_uri,
+    parse_s3_uri,
+)
 from lib.schemas import (
     CitationEntry,
     DataComparisonResponse,
@@ -410,6 +418,48 @@ def _build_recording_meta_url(request: Request, wav_id: Optional[str]) -> Option
         return None
 
 
+def _resolve_audio_media_type(path_or_key: str, fallback: str = "audio/wav") -> str:
+    guessed = guess_media_type(path_or_key)
+    if guessed.startswith("audio/"):
+        return guessed
+    guessed_stdlib, _ = mimetypes.guess_type(path_or_key)
+    if guessed_stdlib and guessed_stdlib.startswith("audio/"):
+        return guessed_stdlib
+    return fallback
+
+
+def _stream_s3_audio(
+    storage: S3RecordingStore,
+    *,
+    bucket: str,
+    key: str,
+) -> StreamingResponse:
+    try:
+        response = storage.get_object(bucket, key)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recording file not found in object storage",
+        ) from exc
+
+    body = response["Body"]
+    media_type = response.get("ContentType") or _resolve_audio_media_type(key)
+    content_length = response.get("ContentLength")
+    headers: Dict[str, str] = {}
+    if content_length is not None:
+        headers["Content-Length"] = str(content_length)
+
+    def _iter_chunks():
+        try:
+            for chunk in body.iter_chunks(chunk_size=1024 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            body.close()
+
+    return StreamingResponse(_iter_chunks(), media_type=media_type, headers=headers)
+
+
 def _combine_datetime(row: Dict[str, Any]) -> Optional[datetime]:
     row_date = row.get("date")
     row_time = row.get("time")
@@ -679,6 +729,26 @@ async def startup_event() -> None:
         notification_service = None
         scheduler = None
 
+    recording_storage_config_raw = resources.get("recording_storage_config")
+    recording_storage_config = (
+        recording_storage_config_raw
+        if isinstance(recording_storage_config_raw, RecordingStorageConfig)
+        else RecordingStorageConfig()
+    )
+    recording_storage: Optional[S3RecordingStore] = None
+    if recording_storage_config.enabled:
+        try:
+            recording_storage = create_s3_recording_store(recording_storage_config)
+            logger.info(
+                "Recording object storage enabled (bucket=%s, endpoint=%s, playback_format=%s)",
+                recording_storage_config.bucket,
+                recording_storage_config.endpoint_url,
+                recording_storage_config.normalized_playback_format,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to initialize recording object storage: %s", exc)
+            recording_storage = None
+
     noaa_scheduler = NoaaUpdateScheduler(app_config, resources)
     noaa_scheduler.start()
 
@@ -697,6 +767,8 @@ async def startup_event() -> None:
     app.state.notification_service = notification_service
     app.state.summary_scheduler = scheduler
     app.state.noaa_scheduler = noaa_scheduler
+    app.state.recording_storage = recording_storage
+    app.state.recording_storage_config = recording_storage_config
 
 
 @app.on_event("shutdown")
@@ -740,6 +812,8 @@ async def _process_microphone_audio_background(
     analyzer: BaseAnalyzer,
     species_enricher: SpeciesEnricher,
     alert_engine: Optional[AlertEngine],
+    recording_storage: Optional[S3RecordingStore],
+    recording_storage_config: RecordingStorageConfig,
     microphone: MicrophoneConfig,
     destination_path: Path,
     latitude: Optional[float],
@@ -752,6 +826,8 @@ async def _process_microphone_audio_background(
             analyzer,
             species_enricher,
             alert_engine,
+            recording_storage,
+            recording_storage_config,
             microphone,
             destination_path,
             latitude,
@@ -769,6 +845,8 @@ def _process_microphone_audio_sync(
     analyzer: BaseAnalyzer,
     species_enricher: SpeciesEnricher,
     alert_engine: Optional[AlertEngine],
+    recording_storage: Optional[S3RecordingStore],
+    recording_storage_config: RecordingStorageConfig,
     microphone: MicrophoneConfig,
     destination_path: Path,
     latitude: Optional[float],
@@ -904,6 +982,8 @@ def _process_microphone_audio_sync(
                 source_location=microphone.location,
                 species_enricher=species_enricher,
                 species_id_map=species_id_map,
+                recording_storage=recording_storage,
+                recording_storage_config=recording_storage_config,
             )
             debug_logger.info(
                 "ears.persistence_complete",
@@ -1082,12 +1162,20 @@ async def ingest_microphone_audio(
 
     lat_value = _parse_optional_float(latitude, "latitude") or microphone.latitude
     lon_value = _parse_optional_float(longitude, "longitude") or microphone.longitude
+    recording_storage: Optional[S3RecordingStore] = getattr(request.app.state, "recording_storage", None)
+    recording_storage_config: RecordingStorageConfig = getattr(
+        request.app.state,
+        "recording_storage_config",
+        RecordingStorageConfig(),
+    )
 
     background_task = asyncio.create_task(
         _process_microphone_audio_background(
             analyzer,
             species_enricher,
             alert_engine,
+            recording_storage,
+            recording_storage_config,
             microphone,
             destination_path,
             lat_value,
@@ -1655,14 +1743,40 @@ def get_recording_metadata(request: Request, wav_id: str) -> RecordingMetadataRe
             detail="Recording path unavailable",
         )
 
-    file_path = Path(raw_path).expanduser()
-    if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Recording file not found on disk",
+    media_type = _resolve_audio_media_type(raw_path)
+    resolved_path = raw_path
+    if is_s3_uri(raw_path):
+        recording_storage: Optional[S3RecordingStore] = getattr(
+            request.app.state,
+            "recording_storage",
+            None,
         )
+        if recording_storage is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Object storage is not configured",
+            )
+        try:
+            bucket, key = parse_s3_uri(raw_path)
+            object_head = recording_storage.head_object(bucket, key)
+            media_type = object_head.get("ContentType") or _resolve_audio_media_type(key)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Recording file not found in object storage",
+            ) from exc
+    else:
+        file_path = Path(raw_path).expanduser()
+        if not file_path.exists() or not file_path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Recording file not found on disk",
+            )
+        resolved_path = str(file_path)
+        media_type = _resolve_audio_media_type(file_path.name)
 
-    media_type, _ = mimetypes.guess_type(file_path.name)
     playback_url = _build_recording_url(request, wav_id)
     if not playback_url:
         raise HTTPException(
@@ -1672,9 +1786,9 @@ def get_recording_metadata(request: Request, wav_id: str) -> RecordingMetadataRe
 
     return RecordingMetadataResponse(
         wav_id=wav_id,
-        path=str(file_path),
+        path=resolved_path,
         url=playback_url,
-        media_type=media_type or "audio/wav",
+        media_type=media_type,
         duration_seconds=row.get("duration_seconds"),
         source_id=row.get("source_id"),
         source_name=row.get("source_name"),
@@ -1687,8 +1801,9 @@ def get_recording_metadata(request: Request, wav_id: str) -> RecordingMetadataRe
     "/recordings/{wav_id}",
     name="get_recording_file",
     summary="Download a stored recording by its identifier.",
+    response_model=None,
 )
-def get_recording_file(wav_id: str) -> FileResponse:
+def get_recording_file(request: Request, wav_id: str) -> StreamingResponse | FileResponse:
     session = get_session()
     try:
         row = (
@@ -1714,6 +1829,28 @@ def get_recording_file(wav_id: str) -> FileResponse:
             detail="Recording path unavailable",
         )
 
+    if is_s3_uri(raw_path):
+        recording_storage: Optional[S3RecordingStore] = getattr(
+            request.app.state,
+            "recording_storage",
+            None,
+        )
+        if recording_storage is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Object storage is not configured",
+            )
+
+        try:
+            bucket, key = parse_s3_uri(raw_path)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Stored recording path is invalid",
+            ) from exc
+
+        return _stream_s3_audio(recording_storage, bucket=bucket, key=key)
+
     file_path = Path(raw_path).expanduser()
     if not file_path.exists():
         raise HTTPException(
@@ -1721,8 +1858,8 @@ def get_recording_file(wav_id: str) -> FileResponse:
             detail="Recording file not found on disk",
         )
 
-    media_type, _ = mimetypes.guess_type(file_path.name)
-    return FileResponse(file_path, media_type=media_type or "audio/wav")
+    media_type = _resolve_audio_media_type(file_path.name)
+    return FileResponse(file_path, media_type=media_type)
 
 
 @app.get(

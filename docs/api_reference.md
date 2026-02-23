@@ -308,9 +308,9 @@ When the comparison baseline is zero the service returns `percent_change: null` 
 ## Recording Download
 
 - **Method / Path:** `GET /recordings/{wav_id}`
-- **Description:** Streams the WAV file associated with a detection.
+- **Description:** Streams the playable audio file associated with a detection (WAV/MP3/OGG depending on storage pipeline settings).
 - **Path Parameters:** `wav_id` — identifier from detection payloads.
-- **Response 200:** Binary audio (`audio/wav`). Returns `404` if the path cannot be located on disk.
+- **Response 200:** Binary audio (`audio/*`). Returns `404` if the object/path cannot be located.
 
 ---
 
