@@ -11,6 +11,7 @@ from lib.config import AppConfig
 from lib.data.db import initialize_database
 from lib.data.tables import data_sources
 from lib.object_storage import build_recording_storage_config
+from lib.playback_proxy import build_playback_service_config
 
 
 _ALLOWED_SOURCE_TYPES = {"image", "taxa", "copy", "ai", "weather"}
@@ -251,6 +252,9 @@ def initialize_environment(
         if key.endswith("path") or key.endswith("_path"):
             resolved.mkdir(parents=True, exist_ok=True)
     recording_storage_config = build_recording_storage_config(storage_section)
+    playback_service_config = build_playback_service_config(
+        birdsong_section.get("playback") if isinstance(birdsong_section.get("playback"), dict) else {}
+    )
     notifications_config = config_data.get("notifications") or {}
 
     database_section = dict(birdsong_section.get("database") or {})
@@ -506,6 +510,7 @@ def initialize_environment(
         "alerts_config": alerts_config,
         "storage_paths": storage_paths,
         "recording_storage_config": recording_storage_config,
+        "playback_service_config": playback_service_config,
         "notifications_config": notifications_config,
     }
 

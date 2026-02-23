@@ -51,6 +51,56 @@ services:
     command: >
       /bin/sh -c 'exec uvicorn api:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app'
 
+  playback:
+    image: birdsong-be:0.0.1
+    container_name: birdsong-playback
+    restart: unless-stopped
+    network_mode: host
+    labels:
+      - "traefik.enable=true"
+
+      # Stickey Sessions use if needed
+      - "traefik.http.services.birdsong-playback.loadbalancer.sticky=true"
+      - "traefik.http.services.birdsong-playback.loadbalancer.sticky.cookie.name=birdsong-playback"
+      - "traefik.http.services.birdsong-playback.loadbalancer.sticky.cookie.secure=true"
+
+      # HTTP Router (for redirecting to HTTPS)
+      - "traefik.http.routers.birdsong-playback-http.rule=Host(`playback.api.birdsong.diy`)"
+      - "traefik.http.routers.birdsong-playback-http.entrypoints=web"
+      - "traefik.http.routers.birdsong-playback-http.middlewares=birdsong-playback-https-redirect"
+
+      # HTTPS Router (for handling secure traffic)
+      - "traefik.http.routers.birdsong-playback.rule=Host(`playback.api.birdsong.diy`)"
+      - "traefik.http.routers.birdsong-playback.entrypoints=websecure"
+      - "traefik.http.routers.birdsong-playback.tls=true"
+      - "traefik.http.routers.birdsong-playback.tls.certresolver=letsencrypt"
+
+      # Redirect HTTP to HTTPS
+      - "traefik.http.middlewares.birdsong-playback-https-redirect.redirectscheme.scheme=https"
+
+      # Service definition
+      - "traefik.http.services.birdsong-playback.loadbalancer.server.port=8001"
+
+      # Add Headers to Inform container of HTTPS
+      - "traefik.http.middlewares.birdsong-playback-https-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.birdsong-playback-https-headers.headers.customrequestheaders.X-Forwarded-Host=playback.api.birdsong.diy"
+      - "traefik.http.middlewares.birdsong-playback-https-headers.headers.customrequestheaders.X-Forwarded-For"
+      - "traefik.http.routers.birdsong-playback.middlewares=birdsong-playback-https-headers"
+
+    env_file:
+      - .env
+    volumes:
+      - ./config.yaml:/etc/birdsong/config.yaml:ro
+      - ./birdsong-backend/app:/app
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./temp:/app/temp
+      - ./models:/app/models
+    ports:
+      - "${PLAYBACK_PORT:-8001}:8001"
+    command: >
+      /bin/sh -c 'exec uvicorn playback_api:app --host 0.0.0.0 --port 8001 --reload --reload-dir /app'
+
   frontend:   
     image: birdsong-fe:0.0.1
     network_mode: host

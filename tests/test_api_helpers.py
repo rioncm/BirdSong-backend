@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from app.api import (
+    _build_recording_url,
     _build_quarter_windows,
     _build_recording_meta_url,
     _format_datetime,
@@ -13,15 +15,35 @@ from app.api import (
     _resolve_device_metadata,
     _group_detections_into_buckets,
 )
+from app.lib.playback_proxy import PlaybackServiceConfig
 from app.lib.schemas import DetectionItem
 
 
 class _DummyRequest:
+    def __init__(self, playback_service_config: PlaybackServiceConfig | None = None) -> None:
+        self.app = SimpleNamespace(
+            state=SimpleNamespace(
+                playback_service_config=playback_service_config or PlaybackServiceConfig()
+            )
+        )
+
     def url_for(self, _name: str, **_kwargs):  # noqa: D401 - simple stub
         wav_id = _kwargs.get("wav_id", "unknown")
         if _name == "get_recording_metadata":
             return f"http://testserver/recordings/{wav_id}/meta"
         return f"http://testserver/recordings/{wav_id}"
+
+
+class _DummyPlaybackRequest(_DummyRequest):
+    def __init__(self) -> None:
+        super().__init__(
+            PlaybackServiceConfig(
+                enabled=True,
+                base_url="https://playback.api.birdsong.diy",
+                default_filter="none",
+                default_format="mp3",
+            )
+        )
 
 
 def test_format_datetime_returns_utc_isoformat() -> None:
@@ -151,6 +173,14 @@ def test_grouping_collapses_species_entries(tmp_path: Path):
 def test_build_recording_meta_url_includes_suffix() -> None:
     request = _DummyRequest()
     assert _build_recording_meta_url(request, "abc123") == "http://testserver/recordings/abc123/meta"
+
+
+def test_build_recording_url_delegates_to_playback_service_when_configured() -> None:
+    request = _DummyPlaybackRequest()
+    assert (
+        _build_recording_url(request, "abc123")
+        == "https://playback.api.birdsong.diy/playback/recordings/abc123?format=mp3"
+    )
 
 
 @pytest.mark.parametrize(

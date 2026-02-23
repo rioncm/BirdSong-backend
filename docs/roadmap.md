@@ -103,13 +103,13 @@ Notes for future development in no particular order
 
 ## Move configuration to database 
 - For initial startup a config.yaml should be used to read all initial settings into the database. 
-- Create 
+- Create admin user and setting managment 
 
 ## Implement Postgre and MariaDB options for database back end
 
-- To allow for larger deployments create 
+- To allow for larger deployments  
 
-## Add playback of detections 
+## Add playback of detections **DONE**
 - Add interface for user to playback wav files with detections. 
 - play, pause, restart, download buttons
 - Visual display of waveform like iNaturalist with start and stop indicators for each detection 
@@ -124,4 +124,9 @@ Build a setup routine for the initial start
 - administrative UI
 - Streams and Mics configuration
 
-## Correct default Lat & Lon
+## Add Search functionality
+- search filters
+    - freeform input:  Species or Common Name
+    - constrained to database oldest : date / time range
+    - Location: dropdown of defined locations
+    

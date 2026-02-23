@@ -54,3 +54,14 @@ This note captures the staged plan for keeping `/remote/upload` fast while givin
 3. **Shared storage**: Ensure workers can reach the WAV files (object storage or replicated volume).
 4. **Secrets/config**: API publishes API keys or metadata the worker needs; store in env vars or secret manager.
 5. **Rollback plan**: Keep the previous stage deployable until the new stage proves stable for one full monitoring window.
+
+## Playback Scalability Lane
+- **Dedicated service**: `playback_api` runs as a separate container and handles `/playback/recordings/{wav_id}` live transcoding/filtering so API pods stay focused on metadata and ingest.
+- **Scale model**: Start with one playback replica, then scale horizontally behind Traefik as concurrent listening grows.
+- **Contract**:
+  - Query `format=mp3|wav|ogg` controls output codec/container.
+  - Query `filter=none|enhanced` toggles noise-reduced EQ/compression chain.
+- **Routing**:
+  - Configure `BIRDSONG_PLAYBACK_SERVICE_ENABLED=true`.
+  - Set `BIRDSONG_PLAYBACK_SERVICE_BASE_URL` (for example, `https://playback.api.birdsong.diy`).
+  - API detection payloads then emit playback URLs pointing at the playback tier.

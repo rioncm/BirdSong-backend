@@ -12,6 +12,7 @@ This plan migrates existing recordings from local filesystem paths to S3-compati
 2. Environment variables are set (see `backend/.env.example`).
 3. Backend dependencies include `boto3`.
 4. Optional: backup your SQLite DB file before migration.
+5. Containers mount config at `/etc/birdsong/config.yaml` (example: `./config.yaml:/etc/birdsong/config.yaml:ro`).
 
 ## Execution Modes
 - Dry run:
@@ -60,3 +61,11 @@ python -m app.backfill_recordings_to_object_storage --max-retries 8 --retry-dela
 1. `GET /recordings/{wav_id}/meta` returns `media_type` of `audio/mpeg` (or configured format).
 2. `GET /recordings/{wav_id}` streams playable audio.
 3. Timeline listen modal plays migrated clips.
+4. If using dedicated playback service, `GET /playback/recordings/{wav_id}?format=mp3` streams correctly.
+
+## Optional dedicated playback tier
+Set these env vars to delegate playback URLs to a separate `playback_api` service:
+- `BIRDSONG_PLAYBACK_SERVICE_ENABLED=true`
+- `BIRDSONG_PLAYBACK_SERVICE_BASE_URL=https://playback.api.birdsong.diy`
+- `BIRDSONG_PLAYBACK_DEFAULT_FILTER=none`
+- `BIRDSONG_PLAYBACK_DEFAULT_FORMAT=mp3`

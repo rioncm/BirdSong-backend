@@ -59,6 +59,10 @@ from lib.object_storage import (
     is_s3_uri,
     parse_s3_uri,
 )
+from lib.playback_proxy import (
+    PlaybackServiceConfig,
+    build_playback_service_url,
+)
 from lib.schemas import (
     CitationEntry,
     DataComparisonResponse,
@@ -402,6 +406,26 @@ def _build_quarter_windows(target_date: date_cls) -> List[QuarterWindow]:
 def _build_recording_url(request: Request, wav_id: Optional[str]) -> Optional[str]:
     if not wav_id:
         return None
+
+    playback_service_config: Optional[PlaybackServiceConfig] = None
+    app_obj = getattr(request, "app", None)
+    app_state = getattr(app_obj, "state", None)
+    if app_state is not None:
+        candidate = getattr(app_state, "playback_service_config", None)
+        if isinstance(candidate, PlaybackServiceConfig):
+            playback_service_config = candidate
+        elif candidate is not None:
+            playback_service_config = PlaybackServiceConfig(
+                enabled=bool(getattr(candidate, "enabled", False)),
+                base_url=getattr(candidate, "base_url", None),
+                default_filter=str(getattr(candidate, "default_filter", "none")),
+                default_format=str(getattr(candidate, "default_format", "mp3")),
+            )
+    if playback_service_config:
+        delegated = build_playback_service_url(playback_service_config, wav_id)
+        if delegated:
+            return delegated
+
     try:
         return str(request.url_for("get_recording_file", wav_id=wav_id))
     except NoMatchFound:
@@ -751,6 +775,20 @@ async def startup_event() -> None:
     noaa_scheduler = NoaaUpdateScheduler(app_config, resources)
     noaa_scheduler.start()
 
+    playback_service_config_raw = resources.get("playback_service_config")
+    playback_service_config = (
+        playback_service_config_raw
+        if isinstance(playback_service_config_raw, PlaybackServiceConfig)
+        else PlaybackServiceConfig()
+    )
+    if playback_service_config.enabled and playback_service_config.base_url:
+        logger.info(
+            "Playback service delegation enabled (base_url=%s, default_filter=%s, default_format=%s)",
+            playback_service_config.base_url,
+            playback_service_config.normalized_filter,
+            playback_service_config.normalized_format,
+        )
+
     def _publish_alert(event: AlertEvent) -> None:
         logger.info("Alert emitted", extra={"alert": event.to_dict()})
         if notification_service:
@@ -768,6 +806,7 @@ async def startup_event() -> None:
     app.state.noaa_scheduler = noaa_scheduler
     app.state.recording_storage = recording_storage
     app.state.recording_storage_config = recording_storage_config
+    app.state.playback_service_config = playback_service_config
 
 
 @app.on_event("shutdown")

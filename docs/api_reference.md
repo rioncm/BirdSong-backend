@@ -4,7 +4,7 @@ Use this guide to exercise the BirdSong backend with tools such as Postman or cu
 
 ## Authentication
 
-Most read endpoints are open. The `/ears` ingestion endpoint requires the `X-API-Key` header that matches the configured microphone.
+Most read endpoints are open. The `/remote/upload` ingestion endpoint requires the `X-API-Key` header that matches the configured microphone.
 
 ---
 
@@ -69,7 +69,7 @@ Most read endpoints are open. The `/ears` ingestion endpoint requires the `X-API
       "recording": {
         "wav_id": "20240112T071844Z_north-side",
         "path": "/Users/.../streams/north-side/20240112T071844Z.wav",
-        "url": "http://localhost:8000/recordings/20240112T071844Z_north-side",
+        "url": "https://playback.api.birdsong.diy/playback/recordings/20240112T071844Z_north-side?format=mp3",
         "meta_url": "http://localhost:8000/recordings/20240112T071844Z_north-side/meta"
       }
     }
@@ -308,9 +308,21 @@ When the comparison baseline is zero the service returns `percent_change: null` 
 ## Recording Download
 
 - **Method / Path:** `GET /recordings/{wav_id}`
-- **Description:** Streams the playable audio file associated with a detection (WAV/MP3/OGG depending on storage pipeline settings).
+- **Description:** Streams the playable audio file associated with a detection (WAV/MP3/OGG depending on storage pipeline settings). This remains the fallback path even when a dedicated playback service is enabled.
 - **Path Parameters:** `wav_id` — identifier from detection payloads.
 - **Response 200:** Binary audio (`audio/*`). Returns `404` if the object/path cannot be located.
+
+---
+
+## Playback Service Stream
+
+- **Method / Path:** `GET /playback/recordings/{wav_id}`
+- **Description:** Dedicated playback/transcoding endpoint (run by `playback_api`) for scale-out listening workloads.
+- **Path Parameters:** `wav_id` — identifier from detection payloads.
+- **Query Parameters (optional):**
+  - `format` — `mp3` (default), `wav`, or `ogg`.
+  - `filter` — `none` (default) or `enhanced` (noise-reduced birdsong emphasis).
+- **Response 200:** Binary audio (`audio/*`), streamed directly or transcoded on demand.
 
 ---
 
@@ -324,9 +336,9 @@ When the comparison baseline is zero the service returns `percent_change: null` 
 ```json
 {
   "wav_id": "20240112T071844Z_north-side",
-  "path": "/Users/.../streams/north-side/20240112T071844Z.wav",
-  "url": "http://localhost:8000/recordings/20240112T071844Z_north-side",
-  "media_type": "audio/wav",
+  "path": "s3://birdsong/recordings/playback/north-side/20240112T071844Z_north-side.mp3",
+  "url": "https://playback.api.birdsong.diy/playback/recordings/20240112T071844Z_north-side?format=mp3",
+  "media_type": "audio/mpeg",
   "duration_seconds": 30.0,
   "source_id": "north-side",
   "source_name": "north-side",
@@ -395,7 +407,7 @@ curl "http://localhost:8000/detections/timeline?bucket_minutes=5&limit=12"
 Upload a sample recording (requires valid mic id + key):
 
 ```sh
-curl -X POST "http://localhost:8000/ears" \
+curl -X POST "http://localhost:8000/remote/upload" \
   -H "X-API-Key: setophaga-coronata" \
   -F "id=backyard-mic" \
   -F "wav=@/tmp/sample.wav"
@@ -403,4 +415,4 @@ curl -X POST "http://localhost:8000/ears" \
 
 ---
 
-Keep this reference alongside Postman; adjust the base URL or API key to match your deployment.*** End Patch
+Keep this reference alongside Postman; adjust the base URL or API key to match your deployment.
